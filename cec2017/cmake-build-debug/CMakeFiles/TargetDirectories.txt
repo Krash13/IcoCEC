@@ -1,0 +1,3 @@
+/home/krasheninnikov.r.s@muctr.ru/Downloads/cec2017_ico_bundle/cec2017/cmake-build-debug/CMakeFiles/ico_cec2017.dir
+/home/krasheninnikov.r.s@muctr.ru/Downloads/cec2017_ico_bundle/cec2017/cmake-build-debug/CMakeFiles/edit_cache.dir
+/home/krasheninnikov.r.s@muctr.ru/Downloads/cec2017_ico_bundle/cec2017/cmake-build-debug/CMakeFiles/rebuild_cache.dir
