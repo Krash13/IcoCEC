@@ -19,7 +19,7 @@ constexpr std::uint32_t GWO_SEED = 123456789u;
 constexpr std::uint64_t ICO_SEED = 42;
 constexpr int META_DIM = 13;
 constexpr int ST_DIM = 10;                 // размерность F1 (2, 10, 20, 30, 50, 100)
-constexpr long ICO_MAX_CALLS = 50000;
+constexpr long ICO_MAX_CALLS = 60000;
 constexpr int CEC_FUNC_ID = 1;             // F1 Shifted and Rotated Bent Cigar
 
 // Целевая функция GWO: запускает ICO с набором параметров x на F1 из CEC2017.
@@ -86,7 +86,7 @@ struct ICO_Fitness {
         params.x_max = Vec(ST_DIM, cec2017::kUpperBound);
         params.gray_percent = user_gray_percent;
         params.genes = std::vector<int>(ST_DIM, user_genes_bits);
-        params.tmax = 200;
+        params.tmax = 500;
         params.printing = false;
 
         try {
@@ -147,11 +147,11 @@ int main() {
     };
 
     ICO_Fitness fitness_function;
-    fitness_function.user_gray_percent = 1.0;
+    fitness_function.user_gray_percent = 0.5;
     fitness_function.user_genes_bits = 32;
 
-    constexpr int gwo_population_size = 100;
-    constexpr int gwo_max_iterations = 200;
+    constexpr int gwo_population_size = 30;
+    constexpr int gwo_max_iterations = 50;
     constexpr bool print_gwo = true;
 
     evo::rng::engine().seed(GWO_SEED);

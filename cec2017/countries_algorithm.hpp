@@ -8,6 +8,7 @@
 // ============================================================
 #pragma once
 
+#include <Eigen/Dense>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -392,25 +393,66 @@ struct RealIndividual : Individual {
     //     update_f(func);
     // }
 
+//     static std::shared_ptr<RealIndividual> crossover(
+//         const RealIndividual& a, const RealIndividual& b,
+//         double alpha,
+//         const std::vector<double>& xmin,
+//         const std::vector<double>& xmax,
+//         const FuncT& func)
+//     {
+//         int dim = (int)a.x.size();
+//         std::vector<double> new_x(dim);
+//         for (int i = 0; i < dim; ++i) {
+//             double lo = std::min(a.x[i], b.x[i]);
+//             double hi = std::max(a.x[i], b.x[i]);
+//             double I  = hi - lo;
+//             new_x[i]  = std::clamp(rand_uniform(lo - I * alpha, hi + I * alpha),
+//                                    xmin[i], xmax[i]);
+//         }
+//         return std::make_shared<RealIndividual>(std::move(new_x), xmin, xmax, func);
+//     }
+// };
     static std::shared_ptr<RealIndividual> crossover(
-        const RealIndividual& a, const RealIndividual& b,
-        double alpha,
-        const std::vector<double>& xmin,
-        const std::vector<double>& xmax,
-        const FuncT& func)
-    {
-        int dim = (int)a.x.size();
-        std::vector<double> new_x(dim);
-        for (int i = 0; i < dim; ++i) {
-            double lo = std::min(a.x[i], b.x[i]);
-            double hi = std::max(a.x[i], b.x[i]);
-            double I  = hi - lo;
-            new_x[i]  = std::clamp(rand_uniform(lo - I * alpha, hi + I * alpha),
-                                   xmin[i], xmax[i]);
+    const RealIndividual& a,
+    const RealIndividual& b,
+    double alpha,
+    const std::vector<double>& xmin,
+    const std::vector<double>& xmax,
+    const FuncT& func) {
+        const Eigen::Index dim = static_cast<Eigen::Index>(a.x.size());
+
+        Eigen::Map<const Eigen::ArrayXd> ax(a.x.data(), dim);
+        Eigen::Map<const Eigen::ArrayXd> bx(b.x.data(), dim);
+        Eigen::Map<const Eigen::ArrayXd> min_x(xmin.data(), dim);
+        Eigen::Map<const Eigen::ArrayXd> max_x(xmax.data(), dim);
+
+        const Eigen::ArrayXd lo = ax.min(bx);
+        const Eigen::ArrayXd hi = ax.max(bx);
+        const Eigen::ArrayXd interval = hi - lo;
+
+        const Eigen::ArrayXd lower = lo - alpha * interval;
+        const Eigen::ArrayXd upper = hi + alpha * interval;
+
+        Eigen::ArrayXd u(dim);
+        for (Eigen::Index i = 0; i < dim; ++i) {
+            u[i] = rand_uniform(0.0, 1.0);
         }
-        return std::make_shared<RealIndividual>(std::move(new_x), xmin, xmax, func);
+
+        Eigen::ArrayXd child = lower + u * (upper - lower);
+
+        // Эквивалент std::clamp(value, xmin[i], xmax[i]) для всего вектора.
+        child = child.max(min_x).min(max_x);
+
+        std::vector<double> new_x(
+            child.data(),
+            child.data() + child.size()
+        );
+
+        return std::make_shared<RealIndividual>(
+            std::move(new_x), xmin, xmax, func
+        );
     }
-};
+    };
 
 struct Country {
     std::vector<std::shared_ptr<Individual>> population;
@@ -838,242 +880,242 @@ void do_motion() {
     return GrayIndividual::from_decimal(dec, home.x_min, home.x_max, home.genes, home.f);
     }
 
-//     static void do_war(Country& c1, Country& c2, int l) {
-//     int actual_l = l;
-//
-//     if (c1.size() <= l || c2.size() <= l) {
-//         actual_l = std::min(c1.size(), c2.size());
-//     }
-//
-//     if (actual_l == 0) {
-//         c1.action = -1;
-//         c2.action = -1;
-//         c1.enemy = nullptr;
-//         c2.enemy = nullptr;
-//         return;
-//     }
-//
-//     auto pick_indices = [](int sz, int cnt) {
-//         std::vector<int> idx(sz);
-//         std::iota(idx.begin(), idx.end(), 0);
-//
-//         for (int i = 0; i < cnt; ++i) {
-//             int j = rand_int(i, sz - 1);
-//             std::swap(idx[i], idx[j]);
-//         }
-//
-//         idx.resize(cnt);
-//         return idx;
-//     };
-//
-//     auto remove_by_idx = [](std::vector<std::shared_ptr<Individual>>& pop,
-//                             std::vector<int> idx) {
-//         std::sort(idx.begin(), idx.end(), std::greater<int>());
-//
-//         for (int i : idx) {
-//             pop.erase(pop.begin() + i);
-//         }
-//     };
-//
-//     const auto idx1 = pick_indices(c1.size(), actual_l);
-//     const auto idx2 = pick_indices(c2.size(), actual_l);
-//
-//     std::vector<std::shared_ptr<Individual>> war1;
-//     std::vector<std::shared_ptr<Individual>> war2;
-//     war1.reserve(actual_l);
-//     war2.reserve(actual_l);
-//
-//     for (int i : idx1) {
-//         war1.push_back(c1.population[i]->clone());
-//     }
-//
-//     for (int i : idx2) {
-//         war2.push_back(c2.population[i]->clone());
-//     }
-//
-//     // Призванные на войну временно удаляются из стран.
-//     remove_by_idx(c1.population, idx1);
-//     remove_by_idx(c2.population, idx2);
-//
-//     int wins1 = 0;
-//     int wins2 = 0;
-//
-//     // Только эти воины могут стать пленными после итоговой победы страны.
-//     std::vector<std::shared_ptr<Individual>> survivors1;
-//     std::vector<std::shared_ptr<Individual>> survivors2;
-//     survivors1.reserve(actual_l);
-//     survivors2.reserve(actual_l);
-//
-//     for (int i = 0; i < actual_l; ++i) {
-//         if (*war1[i] < *war2[i]) {
-//             // c1 выигрывает дуэль: её воин выживает.
-//             ++wins1;
-//             survivors1.push_back(war1[i]);
-//
-//             // Проигравший c2 заменяется новой случайной особью в c2.
-//             c2.population.push_back(c2.make_random_individual());
-//
-//         } else if (*war2[i] < *war1[i]) {
-//             // c2 выигрывает дуэль: её воин выживает.
-//             ++wins2;
-//             survivors2.push_back(war2[i]);
-//
-//             // Проигравший c1 заменяется новой случайной особью в c1.
-//             c1.population.push_back(c1.make_random_individual());
-//
-//         } else {
-//             // Ничья в конкретной дуэли: оба воина остаются живы.
-//             survivors1.push_back(war1[i]);
-//             survivors2.push_back(war2[i]);
-//         }
-//     }
-//
-//     if (wins1 > wins2) {
-//         // c1 победила в войне.
-//         // Все выжившие, включая выживших c2, переходят в c1.
-//         for (auto& warrior : survivors1) {
-//             c1.population.push_back(warrior);
-//         }
-//
-//         for (auto& prisoner : survivors2) {
-//             c1.population.push_back(prisoner);
-//         }
-//
-//     } else if (wins2 > wins1) {
-//         // c2 победила в войне.
-//         // Все выжившие, включая выживших c1, переходят в c2.
-//         for (auto& prisoner : survivors1) {
-//             c2.population.push_back(prisoner);
-//         }
-//
-//         for (auto& warrior : survivors2) {
-//             c2.population.push_back(warrior);
-//         }
-//
-//     } else {
-//         // Ничья по числу выигранных дуэлей:
-//         // выжившие возвращаются в исходные страны.
-//         for (auto& warrior : survivors1) {
-//             c1.population.push_back(warrior);
-//         }
-//
-//         for (auto& warrior : survivors2) {
-//             c2.population.push_back(warrior);
-//         }
-//     }
-//
-//     // Пленные приводятся к представлению страны-победителя.
-//     c1.update_individual_type();
-//     c2.update_individual_type();
-//
-//     c1.sort_population();
-//     c2.sort_population();
-//
-//     c1.action = -1;
-//     c2.action = -1;
-//     c1.enemy = nullptr;
-//     c2.enemy = nullptr;
-// }
-    static void do_war(Country& c1, Country& c2, int l, double r_max) {
+    static void do_war(Country& c1, Country& c2, int l) {
     int actual_l = l;
-    if (c1.size() <= l || c2.size() <= l)
+
+    if (c1.size() <= l || c2.size() <= l) {
         actual_l = std::min(c1.size(), c2.size());
+    }
 
     if (actual_l == 0) {
-        c1.action = -1; c2.action = -1;
-        c1.enemy = nullptr; c2.enemy = nullptr;
+        c1.action = -1;
+        c2.action = -1;
+        c1.enemy = nullptr;
+        c2.enemy = nullptr;
         return;
     }
 
     auto pick_indices = [](int sz, int cnt) {
         std::vector<int> idx(sz);
         std::iota(idx.begin(), idx.end(), 0);
-        for (int i = 0; i < cnt; ++i)
-            std::swap(idx[i], idx[rand_int(i, sz - 1)]);
+
+        for (int i = 0; i < cnt; ++i) {
+            int j = rand_int(i, sz - 1);
+            std::swap(idx[i], idx[j]);
+        }
+
         idx.resize(cnt);
         return idx;
     };
-    auto remove_by_idx = [](auto& pop, std::vector<int> idx) {
+
+    auto remove_by_idx = [](std::vector<std::shared_ptr<Individual>>& pop,
+                            std::vector<int> idx) {
         std::sort(idx.begin(), idx.end(), std::greater<int>());
-        for (int i : idx) pop.erase(pop.begin() + i);
+
+        for (int i : idx) {
+            pop.erase(pop.begin() + i);
+        }
     };
 
     const auto idx1 = pick_indices(c1.size(), actual_l);
     const auto idx2 = pick_indices(c2.size(), actual_l);
 
-    std::vector<std::shared_ptr<Individual>> war1, war2;
-    for (int i : idx1) war1.push_back(c1.population[i]->clone());
-    for (int i : idx2) war2.push_back(c2.population[i]->clone());
+    std::vector<std::shared_ptr<Individual>> war1;
+    std::vector<std::shared_ptr<Individual>> war2;
+    war1.reserve(actual_l);
+    war2.reserve(actual_l);
 
+    for (int i : idx1) {
+        war1.push_back(c1.population[i]->clone());
+    }
+
+    for (int i : idx2) {
+        war2.push_back(c2.population[i]->clone());
+    }
+
+    // Призванные на войну временно удаляются из стран.
     remove_by_idx(c1.population, idx1);
     remove_by_idx(c2.population, idx2);
 
-    int wins1 = 0, wins2 = 0;
-    std::vector<std::shared_ptr<Individual>> survivors1, survivors2;
+    int wins1 = 0;
+    int wins2 = 0;
+
+    // Только эти воины могут стать пленными после итоговой победы страны.
+    std::vector<std::shared_ptr<Individual>> survivors1;
+    std::vector<std::shared_ptr<Individual>> survivors2;
+    survivors1.reserve(actual_l);
+    survivors2.reserve(actual_l);
 
     for (int i = 0; i < actual_l; ++i) {
         if (*war1[i] < *war2[i]) {
+            // c1 выигрывает дуэль: её воин выживает.
             ++wins1;
             survivors1.push_back(war1[i]);
-            c2.population.push_back(
-                recruit_from_duel(*war1[i], *war2[i], c2, r_max)
-            );
+
+            // Проигравший c2 заменяется новой случайной особью в c2.
+            c2.population.push_back(c2.make_random_individual());
+
         } else if (*war2[i] < *war1[i]) {
+            // c2 выигрывает дуэль: её воин выживает.
             ++wins2;
             survivors2.push_back(war2[i]);
-            c1.population.push_back(
-                recruit_from_duel(*war2[i], *war1[i], c1, r_max)
-            );
+
+            // Проигравший c1 заменяется новой случайной особью в c1.
+            c1.population.push_back(c1.make_random_individual());
+
         } else {
+            // Ничья в конкретной дуэли: оба воина остаются живы.
             survivors1.push_back(war1[i]);
             survivors2.push_back(war2[i]);
         }
     }
 
-    auto assimilate = [&](Country& winner, std::shared_ptr<Individual> prisoner) {
-        if (winner.empty()) {
-            winner.population.push_back(prisoner);
-            return;
-        }
-        const auto capital = winner.population[0]->real_x();
-        auto px = prisoner->real_x();
-        const double r = rand_uniform(0.35, 0.85);
-        for (int d = 0; d < (int)px.size(); ++d) {
-            px[d] = std::clamp(
-                px[d] + r * (capital[d] - px[d]),
-                winner.x_min[d], winner.x_max[d]
-            );
-        }
-        if (winner.itype == IndividualType::Real) {
-            auto ni = std::make_shared<RealIndividual>(
-                std::move(px), winner.x_min, winner.x_max, winner.f
-            );
-            ni->ep_n = prisoner->ep_n;
-            winner.population.push_back(std::move(ni));
-        } else {
-            // проще: сначала положить как есть, тип поправит update_individual_type
-            winner.population.push_back(prisoner);
-        }
-    };
-
     if (wins1 > wins2) {
-        for (auto& w : survivors1) c1.population.push_back(w);
-        for (auto& p : survivors2) assimilate(c1, p);
+        // c1 победила в войне.
+        // Все выжившие, включая выживших c2, переходят в c1.
+        for (auto& warrior : survivors1) {
+            c1.population.push_back(warrior);
+        }
+
+        for (auto& prisoner : survivors2) {
+            c1.population.push_back(prisoner);
+        }
+
     } else if (wins2 > wins1) {
-        for (auto& p : survivors1) assimilate(c2, p);
-        for (auto& w : survivors2) c2.population.push_back(w);
+        // c2 победила в войне.
+        // Все выжившие, включая выживших c1, переходят в c2.
+        for (auto& prisoner : survivors1) {
+            c2.population.push_back(prisoner);
+        }
+
+        for (auto& warrior : survivors2) {
+            c2.population.push_back(warrior);
+        }
+
     } else {
-        for (auto& w : survivors1) c1.population.push_back(w);
-        for (auto& w : survivors2) c2.population.push_back(w);
+        // Ничья по числу выигранных дуэлей:
+        // выжившие возвращаются в исходные страны.
+        for (auto& warrior : survivors1) {
+            c1.population.push_back(warrior);
+        }
+
+        for (auto& warrior : survivors2) {
+            c2.population.push_back(warrior);
+        }
     }
 
+    // Пленные приводятся к представлению страны-победителя.
     c1.update_individual_type();
     c2.update_individual_type();
+
     c1.sort_population();
     c2.sort_population();
-    c1.action = -1; c2.action = -1;
-    c1.enemy = nullptr; c2.enemy = nullptr;
+
+    c1.action = -1;
+    c2.action = -1;
+    c1.enemy = nullptr;
+    c2.enemy = nullptr;
 }
+//     static void do_war(Country& c1, Country& c2, int l, double r_max) {
+//     int actual_l = l;
+//     if (c1.size() <= l || c2.size() <= l)
+//         actual_l = std::min(c1.size(), c2.size());
+//
+//     if (actual_l == 0) {
+//         c1.action = -1; c2.action = -1;
+//         c1.enemy = nullptr; c2.enemy = nullptr;
+//         return;
+//     }
+//
+//     auto pick_indices = [](int sz, int cnt) {
+//         std::vector<int> idx(sz);
+//         std::iota(idx.begin(), idx.end(), 0);
+//         for (int i = 0; i < cnt; ++i)
+//             std::swap(idx[i], idx[rand_int(i, sz - 1)]);
+//         idx.resize(cnt);
+//         return idx;
+//     };
+//     auto remove_by_idx = [](auto& pop, std::vector<int> idx) {
+//         std::sort(idx.begin(), idx.end(), std::greater<int>());
+//         for (int i : idx) pop.erase(pop.begin() + i);
+//     };
+//
+//     const auto idx1 = pick_indices(c1.size(), actual_l);
+//     const auto idx2 = pick_indices(c2.size(), actual_l);
+//
+//     std::vector<std::shared_ptr<Individual>> war1, war2;
+//     for (int i : idx1) war1.push_back(c1.population[i]->clone());
+//     for (int i : idx2) war2.push_back(c2.population[i]->clone());
+//
+//     remove_by_idx(c1.population, idx1);
+//     remove_by_idx(c2.population, idx2);
+//
+//     int wins1 = 0, wins2 = 0;
+//     std::vector<std::shared_ptr<Individual>> survivors1, survivors2;
+//
+//     for (int i = 0; i < actual_l; ++i) {
+//         if (*war1[i] < *war2[i]) {
+//             ++wins1;
+//             survivors1.push_back(war1[i]);
+//             c2.population.push_back(
+//                 recruit_from_duel(*war1[i], *war2[i], c2, r_max)
+//             );
+//         } else if (*war2[i] < *war1[i]) {
+//             ++wins2;
+//             survivors2.push_back(war2[i]);
+//             c1.population.push_back(
+//                 recruit_from_duel(*war2[i], *war1[i], c1, r_max)
+//             );
+//         } else {
+//             survivors1.push_back(war1[i]);
+//             survivors2.push_back(war2[i]);
+//         }
+//     }
+//
+//     auto assimilate = [&](Country& winner, std::shared_ptr<Individual> prisoner) {
+//         if (winner.empty()) {
+//             winner.population.push_back(prisoner);
+//             return;
+//         }
+//         const auto capital = winner.population[0]->real_x();
+//         auto px = prisoner->real_x();
+//         const double r = rand_uniform(0.35, 0.85);
+//         for (int d = 0; d < (int)px.size(); ++d) {
+//             px[d] = std::clamp(
+//                 px[d] + r * (capital[d] - px[d]),
+//                 winner.x_min[d], winner.x_max[d]
+//             );
+//         }
+//         if (winner.itype == IndividualType::Real) {
+//             auto ni = std::make_shared<RealIndividual>(
+//                 std::move(px), winner.x_min, winner.x_max, winner.f
+//             );
+//             ni->ep_n = prisoner->ep_n;
+//             winner.population.push_back(std::move(ni));
+//         } else {
+//             // проще: сначала положить как есть, тип поправит update_individual_type
+//             winner.population.push_back(prisoner);
+//         }
+//     };
+//
+//     if (wins1 > wins2) {
+//         for (auto& w : survivors1) c1.population.push_back(w);
+//         for (auto& p : survivors2) assimilate(c1, p);
+//     } else if (wins2 > wins1) {
+//         for (auto& p : survivors1) assimilate(c2, p);
+//         for (auto& w : survivors2) c2.population.push_back(w);
+//     } else {
+//         for (auto& w : survivors1) c1.population.push_back(w);
+//         for (auto& w : survivors2) c2.population.push_back(w);
+//     }
+//
+//     c1.update_individual_type();
+//     c2.update_individual_type();
+//     c1.sort_population();
+//     c2.sort_population();
+//     c1.action = -1; c2.action = -1;
+//     c1.enemy = nullptr; c2.enemy = nullptr;
+// }
 };
 
 class CountriesAlgorithm {
@@ -1103,10 +1145,10 @@ public:
         // Вероятности выбора действий стран на каждой итерации.
         // Порядок: Война, Обмен, Движение к лидеру, Эпидемия.
         // Сумма всех четырёх значений должна быть равна 1.0.
-        double p_war      = 0.25;
-        double p_trade    = 0.25;
-        double p_motion   = 0.25;
-        double p_epidemic = 0.25;
+        double p_war      = 0.0;
+        double p_trade    = 1 / 3.0;
+        double p_motion   = 1 / 3.0;
+        double p_epidemic = 1 / 3.0;
     };
 
     explicit CountriesAlgorithm(FuncT func, Params params)
@@ -1190,7 +1232,7 @@ public:
                     Country::do_trade(*c, *c->ally, p_.k);
                 } else if (act == 2 && c->enemy != nullptr) {
                     ++cnt_war;
-                    Country::do_war(*c, *c->enemy, p_.l, r_max);
+                    Country::do_war(*c, *c->enemy, p_.l);
                 } else if (act == 3) {
                     ++cnt_epi;
                     double pmax = (c->itype == IndividualType::Gray)
