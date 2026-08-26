@@ -1145,10 +1145,39 @@ public:
         // Вероятности выбора действий стран на каждой итерации.
         // Порядок: Война, Обмен, Движение к лидеру, Эпидемия.
         // Сумма всех четырёх значений должна быть равна 1.0.
-        double p_war      = 0.0;
-        double p_trade    = 1 / 3.0;
-        double p_motion   = 1 / 3.0;
-        double p_epidemic = 1 / 3.0;
+        double p_war      = 0.25;
+        double p_trade    = 0.25;
+        double p_motion   = 0.25;
+        double p_epidemic = 0.25;
+        bool   adaptive_actions = true;
+        double action_alpha     = 0.1;   // скорость обучения EMA
+        double action_pmin      = 0.07;
+        double action_warmup_frac = 0.06;
+    };
+
+    // Новый компонент — держим credit/вероятности вне Country, на уровне алгоритма.
+    struct ActionAdaptation {
+        // Порядок: 0=motion, 1=trade, 2=war, 3=epidemic
+        std::array<double, 4> reward = {0.0, 0.0, 0.0, 0.0};   // EMA "выгоды на вызов ЦФ"
+        std::array<double, 4> probs  = {0.25, 0.25, 0.25, 0.25};
+
+        // credit = относительное улучшение avg_f страны / (число вызовов ЦФ, потраченных действием)
+        void update(int action_idx, double f_before, double f_after, long calls_spent, double alpha) {
+            if (calls_spent <= 0) calls_spent = 1;
+            double improvement = std::max(0.0, f_before - f_after); // минимизация
+            double credit = improvement / (double)calls_spent;
+            reward[action_idx] = (1.0 - alpha) * reward[action_idx] + alpha * credit;
+        }
+
+        // Probability matching с нижним порогом (аналог adaptive pursuit)
+        void renormalize(double p_min) {
+            double sum = 0.0;
+            for (double r : reward) sum += r;
+            if (sum <= 1e-15) { probs = {0.25, 0.25, 0.25, 0.25}; return; }
+            double residual = 1.0 - 4 * p_min;
+            for (int i = 0; i < 4; ++i)
+                probs[i] = p_min + residual * (reward[i] / sum);
+        }
     };
 
     explicit CountriesAlgorithm(FuncT func, Params params)
@@ -1182,151 +1211,324 @@ public:
                 p_.N, p_.x_min, p_.x_max, f_, IndividualType::Real, p_.genes));
     }
 
-    // Аналог testing(canonical_x, epsilon, y_epsilon, max_calls) -> (best_x, best_f, ti)
     std::tuple<Vec, double, long> start(const Vec& canonical_x,
-                                        double epsilon,
-                                        std::optional<double> y_epsilon,
-                                        std::optional<long> max_calls) {
+                                    double epsilon,
+                                    std::optional<double> y_epsilon,
+                                    std::optional<long> max_calls) {
 
-        double canonical_y = f_(canonical_x);
-        Vec best_x;
-        double best_f = std::numeric_limits<double>::infinity();
-        long ti = 0;
-        if (!countries_.empty() && !countries_[0]->population.empty()) {
-            best_x = countries_[0]->population[0]->real_x();
-            best_f = countries_[0]->population[0]->f_value;
+    double canonical_y = f_(canonical_x);
+    Vec best_x;
+    double best_f = std::numeric_limits<double>::infinity();
+    long ti = 0;
+    if (!countries_.empty() && !countries_[0]->population.empty()) {
+        best_x = countries_[0]->population[0]->real_x();
+        best_f = countries_[0]->population[0]->f_value;
+    }
+
+    // Разогрев: первые action_warmup_frac * tmax итераций вероятности
+    // действий не адаптируются, чтобы EMA-статистика набралась не на шуме.
+    long warmup_iters = static_cast<long>(
+        std::round(p_.action_warmup_frac * static_cast<double>(p_.tmax)));
+
+    for (ti = 1; ti <= p_.tmax; ++ti) {
+        double progress = static_cast<double>(ti - 1) /
+      std::max(1, p_.tmax - 1);
+        // std::cout << p_.p_war << ' ' << p_.p_trade << ' ' << p_.p_motion << ' ' << p_.p_epidemic << std::endl;
+        // От 2.0 в начале до 1.2 на последней итерации.
+        // Степень 0.6 означает медленное уменьшение в начале.
+        double r_max = 2.0 - 0.8 * std::pow(progress, 0.6);
+        // Проверка лимита вызовов перед итерацией
+        if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
+            if (p_.printing) std::cout << "Лимит вызовов функции достигнут\n";
+            return {best_x, best_f, ti};
         }
 
-        for (ti = 1; ti <= p_.tmax; ++ti) {
-            double progress = static_cast<double>(ti - 1) /
-          std::max(1, p_.tmax - 1);
+        {
+            std::vector<Country*> ptrs;
+            ptrs.reserve(countries_.size());
+            for (auto& c : countries_) ptrs.push_back(c.get());
+            for (auto* c : ptrs)
+                if (c->action == -1)
+                    c->select_action(ptrs, p_.p_war, p_.p_trade, p_.p_motion, p_.p_epidemic);
+        }
 
-            // От 2.0 в начале до 1.2 на последней итерации.
-            // Степень 0.6 означает медленное уменьшение в начале.
-            double r_max = 2.0 - 0.8 * std::pow(progress, 0.6);
-            // Проверка лимита вызовов перед итерацией
-            if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
-                if (p_.printing) std::cout << "Лимит вызовов функции достигнут\n";
-                return {best_x, best_f, ti};
+        int cnt_motion=0, cnt_trade=0, cnt_war=0, cnt_epi=0;
+        double q_max_term = (1.0 - (double)ti / p_.tmax) * p_.max_mutation;
+
+        // "avg_f до" по каждой стране — нужно для расчёта credit действия.
+        std::vector<double> avg_before(countries_.size());
+        for (size_t i = 0; i < countries_.size(); ++i)
+            avg_before[i] = countries_[i]->avg_f();
+
+        for (size_t i = 0; i < countries_.size(); ++i) {
+            auto& c = countries_[i];
+            int act = c->action;
+            long calls_before = *calls_count_;
+
+            if (act == 0) {
+                ++cnt_motion;
+                c->do_motion();
+            } else if (act == 1 && c->ally != nullptr) {
+                ++cnt_trade;
+                Country::do_trade(*c, *c->ally, p_.k);
+            } else if (act == 2 && c->enemy != nullptr) {
+                ++cnt_war;
+                Country::do_war(*c, *c->enemy, p_.l);
+            } else if (act == 3) {
+                ++cnt_epi;
+                double pmax = (c->itype == IndividualType::Gray)
+                                ? q_max_term      // это (1 - t/tmax) * q_max, без -n_ep и без max(1,...)
+                                : p_.p_max;
+                c->do_epidemic(p_.ep_elite, p_.ep_dead, pmax);
             }
 
-            {
-                std::vector<Country*> ptrs;
-                ptrs.reserve(countries_.size());
-                for (auto& c : countries_) ptrs.push_back(c.get());
-                for (auto* c : ptrs)
-                    if (c->action == -1)
-                        c->select_action(ptrs, p_.p_war, p_.p_trade, p_.p_motion, p_.p_epidemic);
+            // Обновляем credit только если это действие реально выполнялось
+            // (act != -1). Для Trade/War партнёр к этому моменту уже имеет
+            // action == -1 (сброшен внутри do_trade/do_war), поэтому здесь
+            // естественным образом кредит приписывается только инициатору.
+            if (p_.adaptive_actions && act != -1) {
+                long calls_after = *calls_count_;
+                double f_after = c->avg_f();
+                action_adapt_.update(act, avg_before[i], f_after,
+                                      calls_after - calls_before, p_.action_alpha);
             }
+        }
 
-            int cnt_motion=0, cnt_trade=0, cnt_war=0, cnt_epi=0;
-            double q_max_term = (1.0 - (double)ti / p_.tmax) * p_.max_mutation;
+        // Пересчёт вероятностей действий на следующую итерацию (после разогрева).
+        if (p_.adaptive_actions && ti > warmup_iters) {
+            action_adapt_.renormalize(p_.action_pmin);
+            p_.p_motion   = action_adapt_.probs[0];
+            p_.p_trade    = action_adapt_.probs[1];
+            p_.p_war      = action_adapt_.probs[2];
+            p_.p_epidemic = action_adapt_.probs[3];
+        }
 
-            for (auto& c : countries_) {
-                int act = c->action;
-                if (act == 0) {
-                    ++cnt_motion;
-                    c->do_motion();
-                } else if (act == 1 && c->ally != nullptr) {
-                    ++cnt_trade;
-                    Country::do_trade(*c, *c->ally, p_.k);
-                } else if (act == 2 && c->enemy != nullptr) {
-                    ++cnt_war;
-                    Country::do_war(*c, *c->enemy, p_.l);
-                } else if (act == 3) {
-                    ++cnt_epi;
-                    double pmax = (c->itype == IndividualType::Gray)
-                                    ? q_max_term      // это (1 - t/tmax) * q_max, без -n_ep и без max(1,...)
-                                    : p_.p_max;
-                    c->do_epidemic(p_.ep_elite, p_.ep_dead, pmax);
-                }
-            }
+        _remove_empty();
+        if (countries_.empty()) break;
 
-            _remove_empty();
-            if (countries_.empty()) break;
+        std::sort(countries_.begin(), countries_.end(),
+                  [](const auto& a, const auto& b) { return a->avg_f() < b->avg_f(); });
 
-            std::sort(countries_.begin(), countries_.end(),
-                      [](const auto& a, const auto& b) { return a->avg_f() < b->avg_f(); });
+        double f_min = countries_.front()->avg_f();
+        double f_max = countries_.back()->avg_f();
 
-            double f_min = countries_.front()->avg_f();
-            double f_max = countries_.back()->avg_f();
-
-            if (f_min == f_max) {
-                std::sort(countries_.begin(), countries_.end(),
-                          [](const auto& a, const auto& b) { return a->best_f() < b->best_f(); });
-                best_x = countries_[0]->population[0]->real_x();
-                best_f = countries_[0]->population[0]->f_value;
-                if (p_.printing) std::cout << "fmin == fmax\n";
-                return {best_x, best_f, ti};
-            }
-
-            std::vector<std::shared_ptr<Individual>> e_individuals;
-            for (auto& c : countries_) {
-                if (c->size() == 1) {
-                    e_individuals.push_back(c->population[0]);
-                    continue;
-                }
-                c->reproduction(p_.n_min, p_.n_max, p_.p_min, p_.p_max,
-                                f_min, f_max, ti, p_.tmax);
-                c->extinction(p_.m_min, p_.m_max, f_min, f_max);
-            }
-
-            _remove_empty();
-
-            if (!countries_.empty()) {
-                for (auto& ind : e_individuals)
-                    _add_individual_to_random_country(ind);
-            }
-
-            for (auto& c : countries_) c->truncate(2 * p_.N);
-
+        if (f_min == f_max) {
             std::sort(countries_.begin(), countries_.end(),
                       [](const auto& a, const auto& b) { return a->best_f() < b->best_f(); });
-
-            if (countries_.empty()) break;
-
             best_x = countries_[0]->population[0]->real_x();
             best_f = countries_[0]->population[0]->f_value;
-
-            if (p_.printing) {
-                std::cout << ti << ") f=" << best_f << std::endl;
-            }
-
-            // 1) Остановка по Евклидову расстоянию x до оптимума (epsilon)
-            double dist = 0.0;
-            for (size_t i = 0; i < best_x.size(); ++i) {
-                dist += (best_x[i] - canonical_x[i]) * (best_x[i] - canonical_x[i]);
-            }
-            dist = std::sqrt(dist);
-
-            // if (dist <= epsilon) {
-            //     return {best_x, best_f, ti};
-            // }
-
-            // 2) Остановка по близости f(x) к f(canonical_x) (y_epsilon)
-            // if (y_epsilon.has_value() && std::abs(best_f - canonical_y) <= y_epsilon.value()) {
-            //     return {best_x, best_f, ti};
-            // }
-            //
-            // if (best_f < canonical_y) {
-            //     return {best_x, best_f, ti};
-            // }
-
-            // 3) Остановка по лимиту вызовов внутри итерации
-            if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
-                if (p_.printing) std::cout << "Лимит вызовов функции достигнут\n";
-                return {best_x, best_f, ti};
-            }
+            if (p_.printing) std::cout << "fmin == fmax\n";
+            return {best_x, best_f, ti};
         }
 
-        return {best_x, best_f, ti > p_.tmax ? p_.tmax : ti};
+        std::vector<std::shared_ptr<Individual>> e_individuals;
+        for (auto& c : countries_) {
+            if (c->size() == 1) {
+                e_individuals.push_back(c->population[0]);
+                continue;
+            }
+            c->reproduction(p_.n_min, p_.n_max, p_.p_min, p_.p_max,
+                            f_min, f_max, ti, p_.tmax);
+            c->extinction(p_.m_min, p_.m_max, f_min, f_max);
+        }
+
+        _remove_empty();
+
+        if (!countries_.empty()) {
+            for (auto& ind : e_individuals)
+                _add_individual_to_random_country(ind);
+        }
+
+        for (auto& c : countries_) c->truncate(2 * p_.N);
+
+        std::sort(countries_.begin(), countries_.end(),
+                  [](const auto& a, const auto& b) { return a->best_f() < b->best_f(); });
+
+        if (countries_.empty()) break;
+
+        best_x = countries_[0]->population[0]->real_x();
+        best_f = countries_[0]->population[0]->f_value;
+
+        if (p_.printing) {
+            std::cout << ti << ") f=" << best_f << std::endl;
+        }
+
+        // 1) Остановка по Евклидову расстоянию x до оптимума (epsilon)
+        double dist = 0.0;
+        for (size_t i = 0; i < best_x.size(); ++i) {
+            dist += (best_x[i] - canonical_x[i]) * (best_x[i] - canonical_x[i]);
+        }
+        dist = std::sqrt(dist);
+
+        // if (dist <= epsilon) {
+        //     return {best_x, best_f, ti};
+        // }
+
+        // 2) Остановка по близости f(x) к f(canonical_x) (y_epsilon)
+        // if (y_epsilon.has_value() && std::abs(best_f - canonical_y) <= y_epsilon.value()) {
+        //     return {best_x, best_f, ti};
+        // }
+        //
+        // if (best_f < canonical_y) {
+        //     return {best_x, best_f, ti};
+        // }
+
+        // 3) Остановка по лимиту вызовов внутри итерации
+        if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
+            if (p_.printing) std::cout << "Лимит вызовов функции достигнут\n";
+            return {best_x, best_f, ti};
+        }
     }
+
+    return {best_x, best_f, ti > p_.tmax ? p_.tmax : ti};
+}
+
+    // Аналог testing(canonical_x, epsilon, y_epsilon, max_calls) -> (best_x, best_f, ti)
+    // std::tuple<Vec, double, long> start(const Vec& canonical_x,
+    //                                     double epsilon,
+    //                                     std::optional<double> y_epsilon,
+    //                                     std::optional<long> max_calls) {
+    //
+    //     double canonical_y = f_(canonical_x);
+    //     Vec best_x;
+    //     double best_f = std::numeric_limits<double>::infinity();
+    //     long ti = 0;
+    //     if (!countries_.empty() && !countries_[0]->population.empty()) {
+    //         best_x = countries_[0]->population[0]->real_x();
+    //         best_f = countries_[0]->population[0]->f_value;
+    //     }
+    //
+    //     for (ti = 1; ti <= p_.tmax; ++ti) {
+    //         double progress = static_cast<double>(ti - 1) /
+    //       std::max(1, p_.tmax - 1);
+    //
+    //         // От 2.0 в начале до 1.2 на последней итерации.
+    //         // Степень 0.6 означает медленное уменьшение в начале.
+    //         // double r_max = 2.0 - 0.8 * std::pow(progress, 0.6);
+    //         // Проверка лимита вызовов перед итерацией
+    //         if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
+    //             if (p_.printing) std::cout << "Лимит вызовов функции достигнут\n";
+    //             return {best_x, best_f, ti};
+    //         }
+    //
+    //         {
+    //             std::vector<Country*> ptrs;
+    //             ptrs.reserve(countries_.size());
+    //             for (auto& c : countries_) ptrs.push_back(c.get());
+    //             for (auto* c : ptrs)
+    //                 if (c->action == -1)
+    //                     c->select_action(ptrs, p_.p_war, p_.p_trade, p_.p_motion, p_.p_epidemic);
+    //         }
+    //
+    //         int cnt_motion=0, cnt_trade=0, cnt_war=0, cnt_epi=0;
+    //         double q_max_term = (1.0 - (double)ti / p_.tmax) * p_.max_mutation;
+    //
+    //         for (auto& c : countries_) {
+    //             int act = c->action;
+    //             if (act == 0) {
+    //                 ++cnt_motion;
+    //                 c->do_motion();
+    //             } else if (act == 1 && c->ally != nullptr) {
+    //                 ++cnt_trade;
+    //                 Country::do_trade(*c, *c->ally, p_.k);
+    //             } else if (act == 2 && c->enemy != nullptr) {
+    //                 ++cnt_war;
+    //                 Country::do_war(*c, *c->enemy, p_.l);
+    //             } else if (act == 3) {
+    //                 ++cnt_epi;
+    //                 double pmax = (c->itype == IndividualType::Gray)
+    //                                 ? q_max_term      // это (1 - t/tmax) * q_max, без -n_ep и без max(1,...)
+    //                                 : p_.p_max;
+    //                 c->do_epidemic(p_.ep_elite, p_.ep_dead, pmax);
+    //             }
+    //         }
+    //
+    //         _remove_empty();
+    //         if (countries_.empty()) break;
+    //
+    //         std::sort(countries_.begin(), countries_.end(),
+    //                   [](const auto& a, const auto& b) { return a->avg_f() < b->avg_f(); });
+    //
+    //         double f_min = countries_.front()->avg_f();
+    //         double f_max = countries_.back()->avg_f();
+    //
+    //         if (f_min == f_max) {
+    //             std::sort(countries_.begin(), countries_.end(),
+    //                       [](const auto& a, const auto& b) { return a->best_f() < b->best_f(); });
+    //             best_x = countries_[0]->population[0]->real_x();
+    //             best_f = countries_[0]->population[0]->f_value;
+    //             if (p_.printing) std::cout << "fmin == fmax\n";
+    //             return {best_x, best_f, ti};
+    //         }
+    //
+    //         std::vector<std::shared_ptr<Individual>> e_individuals;
+    //         for (auto& c : countries_) {
+    //             if (c->size() == 1) {
+    //                 e_individuals.push_back(c->population[0]);
+    //                 continue;
+    //             }
+    //             c->reproduction(p_.n_min, p_.n_max, p_.p_min, p_.p_max,
+    //                             f_min, f_max, ti, p_.tmax);
+    //             c->extinction(p_.m_min, p_.m_max, f_min, f_max);
+    //         }
+    //
+    //         _remove_empty();
+    //
+    //         if (!countries_.empty()) {
+    //             for (auto& ind : e_individuals)
+    //                 _add_individual_to_random_country(ind);
+    //         }
+    //
+    //         for (auto& c : countries_) c->truncate(2 * p_.N);
+    //
+    //         std::sort(countries_.begin(), countries_.end(),
+    //                   [](const auto& a, const auto& b) { return a->best_f() < b->best_f(); });
+    //
+    //         if (countries_.empty()) break;
+    //
+    //         best_x = countries_[0]->population[0]->real_x();
+    //         best_f = countries_[0]->population[0]->f_value;
+    //
+    //         if (p_.printing) {
+    //             std::cout << ti << ") f=" << best_f << std::endl;
+    //         }
+    //
+    //         // 1) Остановка по Евклидову расстоянию x до оптимума (epsilon)
+    //         double dist = 0.0;
+    //         for (size_t i = 0; i < best_x.size(); ++i) {
+    //             dist += (best_x[i] - canonical_x[i]) * (best_x[i] - canonical_x[i]);
+    //         }
+    //         dist = std::sqrt(dist);
+    //
+    //         // if (dist <= epsilon) {
+    //         //     return {best_x, best_f, ti};
+    //         // }
+    //
+    //         // 2) Остановка по близости f(x) к f(canonical_x) (y_epsilon)
+    //         // if (y_epsilon.has_value() && std::abs(best_f - canonical_y) <= y_epsilon.value()) {
+    //         //     return {best_x, best_f, ti};
+    //         // }
+    //         //
+    //         // if (best_f < canonical_y) {
+    //         //     return {best_x, best_f, ti};
+    //         // }
+    //
+    //         // 3) Остановка по лимиту вызовов внутри итерации
+    //         if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
+    //             if (p_.printing) std::cout << "Лимит вызовов функции достигнут\n";
+    //             return {best_x, best_f, ti};
+    //         }
+    //     }
+    //
+    //     return {best_x, best_f, ti > p_.tmax ? p_.tmax : ti};
+    // }
 
 private:
     FuncT f_;
     Params p_;
     std::shared_ptr<long> calls_count_;
     std::vector<std::unique_ptr<Country>> countries_;
+    ActionAdaptation action_adapt_;
 
     void _remove_empty() {
         countries_.erase(

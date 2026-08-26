@@ -11,7 +11,7 @@
 // ============================================================================
 
 #include "benchmark.hpp"
-#include "countries_algorithm.hpp"
+#include "countries_algorithm_v2.hpp"
 #include "cec2017.hpp"
 #include <iostream>
 #include <vector>
@@ -24,25 +24,32 @@ using namespace bench;
 using Vec = std::vector<double>;
 
 struct IcoSettings {
-    double p_min        = 0.00005;
-    double p_max        = 1.15;
-    int    M            = 21;
-    int    N            = 18;
-    int    n_min        = 3;
-    int    n_max        = 4;
-    int    m_min        = 4;
-    int    m_max        = 8;
-    int    k            = 10;
-    int    l            = 5;
-    double ep_elite     = 0.32;
-    double ep_dead      = 0.47;
-    int    max_mutation = 58;
-    int    tmax         = 500;
-    double gray_percent = 0.5;
-    double p_war      = 0.25;
-    double p_trade    = 0.25;
-    double p_motion   = 0.25;
-    double p_epidemic = 0.25;
+    double p_min        = 0.023;
+    double p_max        = 1.8;
+    int    M            = 10;
+    int    N            = 11;
+    int    n_min        = 1;
+    int    n_max        = 2;
+    int    m_min        = 2;
+    int    m_max        = 3;
+    int    k            = 8;
+    int    l            = 2;
+    double ep_elite     = 0.077;
+    double ep_dead      = 0.28;
+    int    max_mutation = 10;
+    int    tmax         = 1200;
+    double gray_percent = 0.15;
+    double p_war      = 0.22;
+    double p_trade    = 0.45;
+    double p_motion   = 0.3;
+    double p_epidemic = 0.07;
+    double p_migration = 0.1;
+    double action_alpha         = 0.321974;
+    double action_pmin          = 0.05;
+    double action_warmup_frac   = 0.00759028;
+    int stagnation_limit     = 17;
+    double restart_country_frac = 0.236802;
+    double migration_frac       = 0.212646;
     bool   printing     = false;
     std::vector<int> genes;
 };
@@ -95,6 +102,13 @@ static Method::Params make_params(const IcoSettings& s, const Vec& x_min, const 
     p.p_trade      = s.p_trade;
     p.p_motion     = s.p_motion;
     p.p_epidemic   = s.p_epidemic;
+    p.p_migration = s.p_migration;
+    p.action_alpha = s.action_alpha;
+    p.action_pmin = s.action_pmin;
+    p.action_warmup_frac = s.action_warmup_frac;
+    p.stagnation_limit = s.stagnation_limit;
+    p.restart_country_frac = s.restart_country_frac;
+    p.migration_frac = s.migration_frac;
     p.genes        = std::vector<int>(dim, 32);
     return p;
 }
@@ -183,7 +197,7 @@ Result run_one_cec(int funcid,
 
 int main(int argc, char** argv) {
     // --- Задайте размерность здесь, либо передайте первым аргументом CLI ---
-    int dim = 10; // допустимые значения: 2, 10, 20, 30, 50, 100
+    int dim = 2; // допустимые значения: 2, 10, 20, 30, 50, 100
     if (argc > 1) dim = std::atoi(argv[1]);
 
     static const int allowed[] = {2, 10, 20, 30, 50, 100};
