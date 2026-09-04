@@ -1,5 +1,5 @@
 // ============================================================================
-// meta_optimization_v2.cpp
+// meta_optimization_v4.cpp
 //
 // Мета-оптимизация параметров ICO (CountriesAlgorithm) с помощью GWO.
 //
@@ -81,6 +81,20 @@ static CountriesAlgorithm::Params decode_params(const Vec& x, int dim) {
     p.ep_dead      = std::clamp(x[11], 0.01, 0.9);
     p.max_mutation = std::max(1, static_cast<int>(std::round(x[12])));
     p.gray_percent = std::clamp(x[13], 0.0, 1.0);
+
+    // Доли операторов кроссовера меняются линейно по FEs / MaxFEs.
+    // Пока они не включены в META_DIM и задаются здесь явно.
+    p.real_blx_share_start   = 0.50;
+    p.real_blx_share_end     = 0.25;
+    p.real_eigen_share_start = 0.50;
+    p.real_eigen_share_end   = 0.75;
+    p.gray_uniform_share_start   = 0.05;
+    p.gray_uniform_share_end     = 0.05;
+    p.gray_two_point_share_start = 0.05;
+    p.gray_two_point_share_end   = 0.05;
+    p.gray_eigen_share_start     = 0.90;
+    p.gray_eigen_share_end       = 0.90;
+    p.eigen_ps = 0.50;
 
     // Softmax по 5 логитам действий: motion, trade, war, epidemic, migration
     std::array<double, 5> logits = {x[14], x[15], x[16], x[17], x[18]};
@@ -299,6 +313,17 @@ int main() {
     std::cout << "s.ep_dead      = " << final_params.ep_dead      << ";\n";
     std::cout << "s.max_mutation = " << final_params.max_mutation << ";\n";
     std::cout << "s.gray_percent = " << final_params.gray_percent << ";\n";
+    std::cout << "s.real_blx_share_start   = " << final_params.real_blx_share_start   << ";\n";
+    std::cout << "s.real_blx_share_end     = " << final_params.real_blx_share_end     << ";\n";
+    std::cout << "s.real_eigen_share_start = " << final_params.real_eigen_share_start << ";\n";
+    std::cout << "s.real_eigen_share_end   = " << final_params.real_eigen_share_end   << ";\n";
+    std::cout << "s.gray_uniform_share_start   = " << final_params.gray_uniform_share_start   << ";\n";
+    std::cout << "s.gray_uniform_share_end     = " << final_params.gray_uniform_share_end     << ";\n";
+    std::cout << "s.gray_two_point_share_start = " << final_params.gray_two_point_share_start << ";\n";
+    std::cout << "s.gray_two_point_share_end   = " << final_params.gray_two_point_share_end   << ";\n";
+    std::cout << "s.gray_eigen_share_start     = " << final_params.gray_eigen_share_start     << ";\n";
+    std::cout << "s.gray_eigen_share_end       = " << final_params.gray_eigen_share_end       << ";\n";
+    std::cout << "s.eigen_ps                   = " << final_params.eigen_ps                   << ";\n";
     std::cout << "s.p_motion     = " << final_params.p_motion       << ";\n";
     std::cout << "s.p_trade      = " << final_params.p_trade        << ";\n";
     std::cout << "s.p_war        = " << final_params.p_war          << ";\n";

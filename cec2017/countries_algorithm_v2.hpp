@@ -1,11 +1,12 @@
 // countries_algorithm_v2.hpp
-// Standalone C++ implementation of the Countries Algorithm (ICO).
-// The public start() interface is compatible
-// with main_cec2017.cpp, benchmark.hpp и CEC2017 suite.
+// Standalone C++ implementation of the Countries Algorithm (ICO), with no
+// pybind11/Python dependency. The public start() interface is compatible with
+// main_cec2017.cpp and benchmark.hpp.
 
 #pragma once
 
 #include <Eigen/Dense>
+#include <Eigen/Eigenvalues>
 
 #include <algorithm>
 #include <cassert>
@@ -179,6 +180,41 @@ struct GrayIndividual : Individual {
         return std::make_shared<GrayIndividual>(gc, x_min, x_max, genes, func);
     }
 
+    static std::shared_ptr<GrayIndividual> from_real(
+        const std::vector<double>& x,
+        const std::vector<double>& x_min,
+        const std::vector<double>& x_max,
+        const std::vector<int>& genes,
+        const FuncT& func) {
+
+        const int dim = static_cast<int>(genes.size());
+        std::vector<uint64_t> gray_code(dim);
+
+        for (int i = 0; i < dim; ++i) {
+            const uint64_t max_val = (1ULL << genes[i]) - 1ULL;
+            const double range = x_max[i] - x_min[i];
+
+            double normalized = 0.0;
+            if (range > 0.0) {
+                normalized =
+                    (std::clamp(x[i], x_min[i], x_max[i]) - x_min[i]) / range;
+            }
+
+            normalized = std::clamp(normalized, 0.0, 1.0);
+
+            const uint64_t decimal = static_cast<uint64_t>(
+                std::llround(static_cast<long double>(normalized) *
+                             static_cast<long double>(max_val))
+            );
+
+            gray_code[i] = tc_to_gray_code(std::min(decimal, max_val));
+        }
+
+        return std::make_shared<GrayIndividual>(
+            std::move(gray_code), x_min, x_max, genes, func
+        );
+    }
+
     std::shared_ptr<Individual> clone() const override {
         auto p = std::make_shared<GrayIndividual>(code, x_min, x_max, genes, f_value);
         p->n_ep = n_ep;
@@ -231,8 +267,11 @@ struct GrayIndividual : Individual {
         return p;
     }
 
+    // Uniform and two-point crossover from the original binary implementation.
+    // The operator itself is selected in Country::reproduction, so the old
+    // hard-coded 0.7 probability is replaced with an explicit choice.
     static std::pair<std::shared_ptr<GrayIndividual>, std::shared_ptr<GrayIndividual>>
-    crossover(const GrayIndividual& a, const GrayIndividual& b, const FuncT& func) {
+    crossover(const GrayIndividual& a, const GrayIndividual& b, bool uniform, const FuncT& func) {
         int total_bits = 0;
         for (int g : a.genes) total_bits += g;
 
@@ -251,11 +290,8 @@ struct GrayIndividual : Individual {
         auto bits_b = to_bits(b);
         std::vector<uint8_t> nb1(total_bits), nb2(total_bits);
 
-        // Use uniform crossover in 70% of matings; retain the original
-        // two-point crossover for the remaining 30%.
-        if (rand_uniform(0.0, 1.0) < 0.7) {
+        if (uniform) {
             for (int i = 0; i < total_bits; ++i) {
-                // Each bit is inherited from either parent with probability 0.5.
                 if (rand_int(0, 1) == 1) {
                     nb1[i] = bits_b[i];
                     nb2[i] = bits_a[i];
@@ -295,6 +331,125 @@ struct GrayIndividual : Individual {
         };
 
         return {bits_to_ind(nb1), bits_to_ind(nb2)};
+    }
+
+    // Gray code is only a representation and quantizer for Eigen crossover.
+    // The arithmetic operator works in the covariance eigenvector coordinate system.
+    static std::pair<
+        std::shared_ptr<GrayIndividual>,
+        std::shared_ptr<GrayIndividual>>
+    eigen_crossover(
+        const GrayIndividual& a,
+        const GrayIndividual& b,
+        const Eigen::MatrixXd* eigen_basis,
+        const FuncT& func) {
+
+        const int dim = static_cast<int>(a.genes.size());
+        assert(dim == static_cast<int>(b.genes.size()));
+
+        const auto ax_real = a.real_x();
+        const auto bx_real = b.real_x();
+
+        // Work in normalized [0, 1]^D coordinates so dimensions with larger
+        // physical ranges do not dominate the covariance matrix.
+        Eigen::VectorXd ax(dim);
+        Eigen::VectorXd bx(dim);
+
+        for (int d = 0; d < dim; ++d) {
+            const double range = a.x_max[d] - a.x_min[d];
+
+            if (range > 0.0) {
+                ax[d] = (ax_real[d] - a.x_min[d]) / range;
+                bx[d] = (bx_real[d] - a.x_min[d]) / range;
+            } else {
+                ax[d] = 0.0;
+                bx[d] = 0.0;
+            }
+        }
+
+        const bool use_eigen =
+            eigen_basis != nullptr &&
+            eigen_basis->rows() == dim &&
+            eigen_basis->cols() == dim &&
+            eigen_basis->allFinite();
+
+        Eigen::VectorXd za;
+        Eigen::VectorXd zb;
+
+        if (use_eigen) {
+            // x' = B^T x
+            za = eigen_basis->transpose() * ax;
+            zb = eigen_basis->transpose() * bx;
+        } else {
+            za = ax;
+            zb = bx;
+        }
+
+        Eigen::VectorXd z1 = za;
+        Eigen::VectorXd z2 = zb;
+
+        // Arithmetic crossover uses an independent alpha for every Eigen
+        // direction. A single alpha for the whole vector would cancel the
+        // rotation and reduce to an ordinary interpolation between parents.
+        for (int j = 0; j < dim; ++j) {
+            const double alpha = rand_uniform(0.0, 1.0);
+            z1[j] = za[j] + alpha * (zb[j] - za[j]);
+            z2[j] = zb[j] + alpha * (za[j] - zb[j]);
+        }
+
+        // Binomial Eigen crossover is kept here for A/B experiments.
+        // const double cr = 0.80;
+        // const int j_rand_1 = rand_int(0, dim - 1);
+        // const int j_rand_2 = rand_int(0, dim - 1);
+        // for (int j = 0; j < dim; ++j) {
+        //     if (j == j_rand_1 || rand_uniform(0.0, 1.0) <= cr) {
+        //         z1[j] = zb[j];
+        //     }
+        //     if (j == j_rand_2 || rand_uniform(0.0, 1.0) <= cr) {
+        //         z2[j] = za[j];
+        //     }
+        // }
+
+        Eigen::VectorXd child1;
+        Eigen::VectorXd child2;
+
+        if (use_eigen) {
+            // x = B x'
+            child1 = (*eigen_basis) * z1;
+            child2 = (*eigen_basis) * z2;
+        } else {
+            child1 = std::move(z1);
+            child2 = std::move(z2);
+        }
+
+        // Eigen crossover can leave the normalized hyper-box. Repair toward
+        // the corresponding parent midpoint rather than clipping hard.
+        auto repair = [](Eigen::VectorXd& x, const Eigen::VectorXd& parent) {
+            for (Eigen::Index d = 0; d < x.size(); ++d) {
+                if (x[d] < 0.0) {
+                    x[d] = 0.5 * parent[d];
+                } else if (x[d] > 1.0) {
+                    x[d] = 0.5 * (parent[d] + 1.0);
+                }
+            }
+        };
+
+        repair(child1, ax);
+        repair(child2, bx);
+
+        std::vector<double> x1(dim);
+        std::vector<double> x2(dim);
+
+        for (int d = 0; d < dim; ++d) {
+            const double range = a.x_max[d] - a.x_min[d];
+            x1[d] = a.x_min[d] + std::clamp(child1[d], 0.0, 1.0) * range;
+            x2[d] = a.x_min[d] + std::clamp(child2[d], 0.0, 1.0) * range;
+        }
+
+        return {
+            from_real(x1, a.x_min, a.x_max, a.genes, func),
+            from_real(x2, a.x_min, a.x_max, a.genes, func)
+        };
     }
 
 private:
@@ -384,6 +539,84 @@ struct RealIndividual : Individual {
         child = child.max(min_x).min(max_x);
 
         std::vector<double> new_x(child.data(), child.data() + child.size());
+        return std::make_shared<RealIndividual>(std::move(new_x), x_min, x_max, func);
+    }
+
+    static std::shared_ptr<RealIndividual> eigen_crossover(
+        const RealIndividual& a, const RealIndividual& b,
+        const Eigen::MatrixXd* eigen_basis,
+        const std::vector<double>& x_min,
+        const std::vector<double>& x_max,
+        const FuncT& func) {
+        const int dim = static_cast<int>(a.x.size());
+        assert(dim == static_cast<int>(b.x.size()));
+
+        Eigen::VectorXd ax(dim);
+        Eigen::VectorXd bx(dim);
+
+        // Use the same normalized coordinate system as the covariance matrix.
+        for (int d = 0; d < dim; ++d) {
+            const double range = x_max[d] - x_min[d];
+            if (range > 0.0) {
+                ax[d] = (a.x[d] - x_min[d]) / range;
+                bx[d] = (b.x[d] - x_min[d]) / range;
+            } else {
+                ax[d] = 0.0;
+                bx[d] = 0.0;
+            }
+        }
+
+        const bool use_eigen =
+            eigen_basis != nullptr &&
+            eigen_basis->rows() == dim &&
+            eigen_basis->cols() == dim &&
+            eigen_basis->allFinite();
+
+        Eigen::VectorXd za;
+        Eigen::VectorXd zb;
+
+        if (use_eigen) {
+            za = eigen_basis->transpose() * ax;
+            zb = eigen_basis->transpose() * bx;
+        } else {
+            za = ax;
+            zb = bx;
+        }
+
+        Eigen::VectorXd child_z = za;
+
+        // Arithmetic crossover along independently selected Eigen directions.
+        for (int j = 0; j < dim; ++j) {
+            const double alpha = rand_uniform(0.0, 1.0);
+            child_z[j] = za[j] + alpha * (zb[j] - za[j]);
+        }
+
+        // Binomial Eigen crossover is kept here for A/B experiments.
+        // const double cr = 0.80;
+        // const int j_rand = rand_int(0, dim - 1);
+        // for (int j = 0; j < dim; ++j) {
+        //     if (j == j_rand || rand_uniform(0.0, 1.0) <= cr) {
+        //         child_z[j] = zb[j];
+        //     }
+        // }
+
+        Eigen::VectorXd child = use_eigen ? (*eigen_basis) * child_z : child_z;
+
+        // Repair toward the first parent instead of hard clipping.
+        for (int d = 0; d < dim; ++d) {
+            if (child[d] < 0.0) {
+                child[d] = 0.5 * ax[d];
+            } else if (child[d] > 1.0) {
+                child[d] = 0.5 * (ax[d] + 1.0);
+            }
+        }
+
+        std::vector<double> new_x(dim);
+        for (int d = 0; d < dim; ++d) {
+            const double range = x_max[d] - x_min[d];
+            new_x[d] = x_min[d] + std::clamp(child[d], 0.0, 1.0) * range;
+        }
+
         return std::make_shared<RealIndividual>(std::move(new_x), x_min, x_max, func);
     }
 };
@@ -589,41 +822,113 @@ struct Country {
         action = -1;
     }
 
-    void reproduction(int n_min, int n_max, double p_min, double p_max,
-                      double f_min, double f_max, int iteration, int t_max) {
+    void reproduction(
+        int n_min, int n_max,
+        double p_min, double p_max,
+        double f_min, double f_max,
+        int iteration, int t_max,
+        const Eigen::MatrixXd* eigen_basis,
+        double real_blx_share,
+        double real_eigen_share,
+        double gray_uniform_share,
+        double gray_two_point_share,
+        double gray_eigen_share) {
+
         if (size() < 2) return;
-        double avg = avg_f();
+
+        const double avg = avg_f();
+
         // Better countries reproduce more. The small denominator guard also
         // keeps the formula defined when country averages coincide.
-        double n_frac = (f_max - avg) / (f_max - f_min + 1e-15);
-        int n = std::clamp((int)std::ceil((n_max - n_min) * n_frac + n_min), n_min, n_max);
+        const double n_frac = (f_max - avg) / (f_max - f_min + 1e-15);
+        const int n = std::clamp(
+            static_cast<int>(std::ceil((n_max - n_min) * n_frac + n_min)),
+            n_min,
+            n_max
+        );
+
+        // Children produced earlier in this call must not become parents in
+        // the same generation.
+        const int parent_count = size();
 
         if (itype == IndividualType::Gray) {
+            gray_uniform_share = std::max(0.0, gray_uniform_share);
+            gray_two_point_share = std::max(0.0, gray_two_point_share);
+            gray_eigen_share = std::max(0.0, gray_eigen_share);
+            double crossover_share_sum = gray_uniform_share + gray_two_point_share + gray_eigen_share;
+
+            if (crossover_share_sum <= 0.0) {
+                gray_uniform_share = 0.05;
+                gray_two_point_share = 0.05;
+                gray_eigen_share = 0.90;
+                crossover_share_sum = 1.0;
+            }
+
             for (int i = 0; i < n; ++i) {
-                int k1 = rand_int(0, size() - 1);
+                const int k1 = rand_int(0, parent_count - 1);
                 int k2 = k1;
-                while (k2 == k1) k2 = rand_int(0, size() - 1);
+                while (k2 == k1) {
+                    k2 = rand_int(0, parent_count - 1);
+                }
+
                 auto a = std::static_pointer_cast<GrayIndividual>(population[k1]);
                 auto b = std::static_pointer_cast<GrayIndividual>(population[k2]);
-                auto [c1, c2] = GrayIndividual::crossover(*a, *b, f);
-                population.push_back(std::move(c1));
-                population.push_back(std::move(c2));
+
+                const double crossover_choice = rand_uniform(0.0, crossover_share_sum);
+                std::pair<std::shared_ptr<GrayIndividual>, std::shared_ptr<GrayIndividual>> children;
+
+                if (crossover_choice < gray_uniform_share) {
+                    children = GrayIndividual::crossover(*a, *b, true, f);
+                } else if (crossover_choice < gray_uniform_share + gray_two_point_share) {
+                    children = GrayIndividual::crossover(*a, *b, false, f);
+                } else {
+                    children = GrayIndividual::eigen_crossover(*a, *b, eigen_basis, f);
+                }
+
+                population.push_back(std::move(children.first));
+                population.push_back(std::move(children.second));
             }
         } else {
-            double p = std::clamp(
-                p_max - (p_max - p_min) * (1.0 - (double)iteration / t_max) *
+            const double p = std::clamp(
+                p_max - (p_max - p_min) *
+                    (1.0 - static_cast<double>(iteration) / t_max) *
                     ((avg - f_min) / (f_max - f_min + 1e-15)),
                 p_min, p_max
             );
+
+            real_blx_share = std::max(0.0, real_blx_share);
+            real_eigen_share = std::max(0.0, real_eigen_share);
+            double crossover_share_sum = real_blx_share + real_eigen_share;
+
+            if (crossover_share_sum <= 0.0) {
+                real_blx_share = 0.50;
+                real_eigen_share = 0.50;
+                crossover_share_sum = 1.0;
+            }
+
             for (int i = 0; i < 2 * n; ++i) {
-                int k1 = rand_int(0, size() - 1);
+                const int k1 = rand_int(0, parent_count - 1);
                 int k2 = k1;
-                while (k2 == k1) k2 = rand_int(0, size() - 1);
+                while (k2 == k1) {
+                    k2 = rand_int(0, parent_count - 1);
+                }
+
                 auto a = std::static_pointer_cast<RealIndividual>(population[k1]);
                 auto b = std::static_pointer_cast<RealIndividual>(population[k2]);
-                population.push_back(RealIndividual::crossover(*a, *b, p, x_min, x_max, f));
+
+                const double crossover_choice = rand_uniform(0.0, crossover_share_sum);
+                if (crossover_choice < real_blx_share) {
+                    population.push_back(
+                        RealIndividual::crossover(*a, *b, p, x_min, x_max, f)
+                    );
+                } else {
+                    population.push_back(
+                        RealIndividual::eigen_crossover(*a, *b, eigen_basis, x_min, x_max, f)
+                    );
+                }
             }
         }
+
         sort_population();
     }
 
@@ -930,6 +1235,24 @@ public:
         int max_mutation = 3;
         int tmax = 1000;
         double gray_percent = 0.5;
+
+        // Crossover operator shares. Values are linearly interpolated from
+        // start to end according to FEs / MaxFEs and normalized when selected.
+        double real_blx_share_start   = 0.50;
+        double real_blx_share_end     = 0.25;
+        double real_eigen_share_start = 0.50;
+        double real_eigen_share_end   = 0.75;
+
+        double gray_uniform_share_start   = 0.05;
+        double gray_uniform_share_end     = 0.05;
+        double gray_two_point_share_start = 0.05;
+        double gray_two_point_share_end   = 0.05;
+        double gray_eigen_share_start     = 0.90;
+        double gray_eigen_share_end       = 0.90;
+
+        // Fraction of the best population used to estimate the Eigen basis.
+        double eigen_ps = 0.50;
+
         bool printing = true;
 
         // Probabilities of the five country actions. The order used throughout
@@ -941,24 +1264,6 @@ public:
         double p_epidemic  = 0.20;
         double p_migration = 0.15;
 
-        // Legacy compact aliases retained for meta_optimization_v2/v3 and
-        // other existing callers. New code should use the underscored fields
-        // above. sync_all_fields() imports non-default legacy values and then
-        // mirrors the canonical values back to these aliases.
-        std::vector<double> xmin;
-        std::vector<double> xmax;
-        double pmin = 0.1;
-        double pmax = 0.5;
-        int nmin = 1;
-        int nmax = 5;
-        int mmin = 1;
-        int mmax = 3;
-        double pmotion    = 0.25;
-        double ptrade     = 0.20;
-        double pwar       = 0.20;
-        double pepidemic  = 0.20;
-        double pmigration = 0.15;
-
         bool   adaptive_actions   = true;
         double action_alpha       = 0.076; // EMA learning rate for action rewards.
         double action_pmin        = 0.05;  // Probability floor for every action.
@@ -969,43 +1274,6 @@ public:
         double restart_country_frac = 0.15; // Worst-country fraction to rebuild.
         double migration_frac       = 0.30; // Individuals replaced during migration.
 
-        void sync_all_fields() {
-            if (!xmin.empty()) x_min = xmin;
-            if (!xmax.empty()) x_max = xmax;
-            if (pmin != 0.1) p_min = pmin;
-            if (pmax != 0.5) p_max = pmax;
-            if (nmin != 1) n_min = nmin;
-            if (nmax != 5) n_max = nmax;
-            if (mmin != 1) m_min = mmin;
-            if (mmax != 3) m_max = mmax;
-
-            if (pmotion != 0.25 || ptrade != 0.20 || pwar != 0.20 ||
-                pepidemic != 0.20 || pmigration != 0.15) {
-                p_motion = pmotion;
-                p_trade = ptrade;
-                p_war = pwar;
-                p_epidemic = pepidemic;
-                p_migration = pmigration;
-            }
-
-            sync_legacy_aliases();
-        }
-
-        void sync_legacy_aliases() {
-            xmin = x_min;
-            xmax = x_max;
-            pmin = p_min;
-            pmax = p_max;
-            nmin = n_min;
-            nmax = n_max;
-            mmin = m_min;
-            mmax = m_max;
-            pmotion = p_motion;
-            ptrade = p_trade;
-            pwar = p_war;
-            pepidemic = p_epidemic;
-            pmigration = p_migration;
-        }
     };
 
     struct ActionAdaptation {
@@ -1042,7 +1310,6 @@ public:
     explicit CountriesAlgorithm(FuncT func, Params params)
         : p_(std::move(params)),
           calls_count_(std::make_shared<long>(0)) {
-        p_.sync_all_fields();
         init_internal(std::move(func));
     }
 
@@ -1051,9 +1318,6 @@ public:
           calls_count_(std::make_shared<long>(0)) {
         p_.x_min = x_min;
         p_.x_max = x_max;
-        p_.xmin = x_min;
-        p_.xmax = x_max;
-        p_.sync_all_fields();
         init_internal(std::move(func));
     }
 
@@ -1070,7 +1334,6 @@ public:
             p_.p_war /= sum_p;
             p_.p_epidemic /= sum_p;
             p_.p_migration /= sum_p;
-            p_.sync_legacy_aliases();
         }
 
         // The shared counter survives copies/moves of the objective wrapper and
@@ -1200,9 +1463,6 @@ public:
                 p_.p_war       = action_adapt_.probs[2];
                 p_.p_epidemic  = action_adapt_.probs[3];
                 p_.p_migration = action_adapt_.probs[4];
-                // Internal adaptation updates canonical fields; only mirror
-                // them outward, otherwise legacy input could overwrite them.
-                p_.sync_legacy_aliases();
             }
 
             remove_empty();
@@ -1222,14 +1482,64 @@ public:
                 f_max = countries_.back()->avg_f();
             }
 
+            // Crossover shares follow the actual evaluation budget. If start()
+            // is used without MaxFEs, iteration progress is kept as a fallback.
+            double crossover_progress = progress;
+            if (max_calls.has_value() && max_calls.value() > 0) {
+                crossover_progress = std::clamp(
+                    static_cast<double>(*calls_count_) / static_cast<double>(max_calls.value()),
+                    0.0,
+                    1.0
+                );
+            }
+
+            auto interpolate_share = [crossover_progress](double start, double end) {
+                return start + crossover_progress * (end - start);
+            };
+
+            const double real_blx_share = interpolate_share(
+                p_.real_blx_share_start, p_.real_blx_share_end);
+            const double real_eigen_share = interpolate_share(
+                p_.real_eigen_share_start, p_.real_eigen_share_end);
+            const double gray_uniform_share = interpolate_share(
+                p_.gray_uniform_share_start, p_.gray_uniform_share_end);
+            const double gray_two_point_share = interpolate_share(
+                p_.gray_two_point_share_start, p_.gray_two_point_share_end);
+            const double gray_eigen_share = interpolate_share(
+                p_.gray_eigen_share_start, p_.gray_eigen_share_end);
+
+            Eigen::MatrixXd eigen_basis;
+            const Eigen::MatrixXd* eigen_basis_ptr = nullptr;
+
+            // The same covariance basis is used by Gray and real individuals.
+            if (p_.x_min.size() > 1 &&
+                (real_eigen_share > 0.0 || gray_eigen_share > 0.0)) {
+                eigen_basis = build_gray_eigen_basis(p_.eigen_ps);
+                eigen_basis_ptr = &eigen_basis;
+            }
+
             std::vector<std::shared_ptr<Individual>> e_individuals;
             for (auto& c : countries_) {
                 if (c->size() <= 1) {
                     if (c->size() == 1) e_individuals.push_back(c->population[0]);
                     continue;
                 }
-                c->reproduction(p_.n_min, p_.n_max, p_.p_min, p_.p_max,
-                                f_min, f_max, (int)iteration, p_.tmax);
+                c->reproduction(
+                    p_.n_min,
+                    p_.n_max,
+                    p_.p_min,
+                    p_.p_max,
+                    f_min,
+                    f_max,
+                    static_cast<int>(iteration),
+                    p_.tmax,
+                    eigen_basis_ptr,
+                    real_blx_share,
+                    real_eigen_share,
+                    gray_uniform_share,
+                    gray_two_point_share,
+                    gray_eigen_share
+                );
                 c->extinction(p_.m_min, p_.m_max, f_min, f_max);
             }
 
@@ -1299,6 +1609,112 @@ private:
     std::shared_ptr<long> calls_count_;
     std::vector<std::unique_ptr<Country>> countries_;
     ActionAdaptation action_adapt_;
+
+    // Build one basis from the combined population rather than from a single
+    // country. With N=20, a per-country covariance matrix would be strongly
+    // rank-deficient for D=30, 50, or 100. The same basis is used by Gray and
+    // real Eigen crossover.
+    Eigen::MatrixXd build_gray_eigen_basis(double ps) const {
+        const int dim = static_cast<int>(p_.x_min.size());
+        Eigen::MatrixXd identity = Eigen::MatrixXd::Identity(dim, dim);
+
+        if (dim <= 1) {
+            return identity;
+        }
+
+        std::vector<const Individual*> pool;
+
+        size_t total_size = 0;
+        for (const auto& country : countries_) {
+            total_size += country->population.size();
+        }
+        pool.reserve(total_size);
+
+        for (const auto& country : countries_) {
+            for (const auto& individual : country->population) {
+                if (std::isfinite(individual->f_value)) {
+                    pool.push_back(individual.get());
+                }
+            }
+        }
+
+        if (pool.size() < 2) {
+            return identity;
+        }
+
+        std::sort(
+            pool.begin(),
+            pool.end(),
+            [](const Individual* lhs, const Individual* rhs) {
+                return lhs->f_value < rhs->f_value;
+            }
+        );
+
+        ps = std::clamp(ps, 0.0, 1.0);
+        int elite_count = static_cast<int>(
+            std::ceil(ps * static_cast<double>(pool.size()))
+        );
+
+        // Covariance needs enough samples to estimate a D-dimensional
+        // orientation. Use at least D+1 points whenever the pool permits it.
+        const int minimum_for_covariance = std::min(
+            static_cast<int>(pool.size()),
+            dim + 1
+        );
+
+        elite_count = std::max(elite_count, minimum_for_covariance);
+        elite_count = std::clamp(
+            elite_count,
+            2,
+            static_cast<int>(pool.size())
+        );
+
+        Eigen::MatrixXd samples(elite_count, dim);
+
+        for (int i = 0; i < elite_count; ++i) {
+            const auto x = pool[i]->real_x();
+
+            for (int d = 0; d < dim; ++d) {
+                const double range = p_.x_max[d] - p_.x_min[d];
+                if (range > 0.0) {
+                    samples(i, d) = (x[d] - p_.x_min[d]) / range;
+                } else {
+                    samples(i, d) = 0.0;
+                }
+            }
+        }
+
+        const Eigen::RowVectorXd mean = samples.colwise().mean();
+        const Eigen::MatrixXd centered = samples.rowwise() - mean;
+        Eigen::MatrixXd covariance =
+            (centered.transpose() * centered) /
+            static_cast<double>(elite_count - 1);
+
+        if (!covariance.allFinite()) {
+            return identity;
+        }
+
+        // Stabilize the eigendecomposition for nearly collapsed populations.
+        const double mean_variance = covariance.diagonal().cwiseAbs().mean();
+        if (!std::isfinite(mean_variance)) {
+            return identity;
+        }
+
+        covariance.diagonal().array() +=
+            1e-12 * std::max(1.0, mean_variance);
+
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> solver(
+            covariance,
+            Eigen::ComputeEigenvectors
+        );
+
+        if (solver.info() != Eigen::Success ||
+            !solver.eigenvectors().allFinite()) {
+            return identity;
+        }
+
+        return solver.eigenvectors();
+    }
 
     void remove_empty() {
         // Country-level operations may eliminate every resident.
