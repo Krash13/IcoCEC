@@ -92,19 +92,19 @@ static CountriesAlgorithm::Params decode_params(const Vec& x, int dim) {
         sum_exp += exps[i];
     }
 
-    p.pmotion    = exps[0] / sum_exp;
-    p.ptrade     = exps[1] / sum_exp;
-    p.pwar       = exps[2] / sum_exp;
-    p.pepidemic  = exps[3] / sum_exp;
-    p.pmigration = exps[4] / sum_exp;
+    p.p_motion    = exps[0] / sum_exp;
+    p.p_trade     = exps[1] / sum_exp;
+    p.p_war       = exps[2] / sum_exp;
+    p.p_epidemic  = exps[3] / sum_exp;
+    p.p_migration = exps[4] / sum_exp;
 
     // Нормализация суммы
-    double sum_p = p.pmotion + p.ptrade + p.pwar + p.pepidemic + p.pmigration;
-    p.pmotion    /= sum_p;
-    p.ptrade     /= sum_p;
-    p.pwar       /= sum_p;
-    p.pepidemic  /= sum_p;
-    p.pmigration /= sum_p;
+    double sum_p = p.p_motion + p.p_trade + p.p_war + p.p_epidemic + p.p_migration;
+    p.p_motion    /= sum_p;
+    p.p_trade     /= sum_p;
+    p.p_war       /= sum_p;
+    p.p_epidemic  /= sum_p;
+    p.p_migration /= sum_p;
 
     p.adaptive_actions   = true;
     p.action_alpha       = std::clamp(x[19], 0.01, 0.9);
@@ -116,15 +116,12 @@ static CountriesAlgorithm::Params decode_params(const Vec& x, int dim) {
     p.restart_country_frac = std::clamp(x[22], 0.05, 0.50);
     p.migration_frac       = std::clamp(x[23], 0.05, 0.60);
 
-    p.xmin = Vec(dim, cec2017::kLowerBound);
-    p.xmax = Vec(dim, cec2017::kUpperBound);
-    p.x_min = p.xmin;
-    p.x_max = p.xmax;
+    p.x_min = Vec(dim, cec2017::kLowerBound);
+    p.x_max = Vec(dim, cec2017::kUpperBound);
     p.genes = std::vector<int>(dim, 32);
     p.tmax  = 300;
     p.printing = false;
 
-    p.sync_all_fields();
     return p;
 }
 
@@ -302,11 +299,11 @@ int main() {
     std::cout << "s.ep_dead      = " << final_params.ep_dead      << ";\n";
     std::cout << "s.max_mutation = " << final_params.max_mutation << ";\n";
     std::cout << "s.gray_percent = " << final_params.gray_percent << ";\n";
-    std::cout << "s.p_motion     = " << final_params.pmotion       << ";\n";
-    std::cout << "s.p_trade      = " << final_params.ptrade        << ";\n";
-    std::cout << "s.p_war        = " << final_params.pwar          << ";\n";
-    std::cout << "s.p_epidemic   = " << final_params.pepidemic     << ";\n";
-    std::cout << "s.p_migration  = " << final_params.pmigration    << ";\n";
+    std::cout << "s.p_motion     = " << final_params.p_motion       << ";\n";
+    std::cout << "s.p_trade      = " << final_params.p_trade        << ";\n";
+    std::cout << "s.p_war        = " << final_params.p_war          << ";\n";
+    std::cout << "s.p_epidemic   = " << final_params.p_epidemic     << ";\n";
+    std::cout << "s.p_migration  = " << final_params.p_migration    << ";\n";
     std::cout << "s.adaptive_actions     = " << (final_params.adaptive_actions ? "true" : "false") << ";\n";
     std::cout << "s.action_alpha         = " << final_params.action_alpha         << ";\n";
     std::cout << "s.action_pmin          = " << final_params.action_pmin          << ";\n";

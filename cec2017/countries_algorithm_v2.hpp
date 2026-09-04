@@ -1,6 +1,7 @@
-// countries_algorithm.hpp
-// Полностью обновленная и исправленная версия алгоритма ICO (CountriesAlgorithm)
-// Полная совместимость с main_cec2017.cpp, benchmark.hpp и CEC2017 suite.
+// countries_algorithm_v2.hpp
+// Standalone C++ implementation of the Countries Algorithm (ICO).
+// The public start() interface is compatible
+// with main_cec2017.cpp, benchmark.hpp и CEC2017 suite.
 
 #pragma once
 
@@ -61,13 +62,16 @@ static inline uint64_t rand_uint64(uint64_t lo, uint64_t hi_inclusive) {
 }
 
 // ============================================================================
-// 5 Actions Choice:
+// Weighted country-action selection
 // 0: Motion, 1: Trade, 2: War, 3: Epidemic, 4: Migration
 // ============================================================================
 
-static inline int weighted_action_choice(double pmotion, double ptrade, double pwar, double pepidemic, double pmigration) {
-    double probs[5] = {pmotion, ptrade, pwar, pepidemic, pmigration};
+static inline int weighted_action_choice(double p_motion, double p_trade, double p_war, double p_epidemic, double p_migration) {
+    // The array order intentionally matches the integer action codes above.
+    double probs[5] = {p_motion, p_trade, p_war, p_epidemic, p_migration};
     double sum = probs[0] + probs[1] + probs[2] + probs[3] + probs[4];
+    // A zero-sum configuration falls back to an unbiased action instead of
+    // leaving the country idle forever.
     if (sum <= 0.0) return rand_int(0, 4);
 
     double r = rand_uniform(0.0, sum);
@@ -88,21 +92,23 @@ enum class IndividualType { Gray, Real };
 using FuncT = std::function<double(const std::vector<double>&)>;
 
 struct Individual {
-    std::vector<double> xmin, xmax;
-    double fvalue = std::numeric_limits<double>::infinity();
-    int epn = 0;
+    std::vector<double> x_min, x_max;
+    double f_value = std::numeric_limits<double>::infinity();
+    // Number of epidemic mutations already applied to this individual. It
+    // reduces mutation amplitude and the Gray-code bit-flip count over time.
+    int n_ep = 0;
     IndividualType itype;
 
-    Individual(std::vector<double> xmin, std::vector<double> xmax, IndividualType t)
-        : xmin(std::move(xmin)), xmax(std::move(xmax)), itype(t) {}
+    Individual(std::vector<double> x_min, std::vector<double> x_max, IndividualType t)
+        : x_min(std::move(x_min)), x_max(std::move(x_max)), itype(t) {}
 
     virtual ~Individual() = default;
     virtual std::vector<double> real_x() const = 0;
     virtual std::shared_ptr<Individual> clone() const = 0;
 
-    bool operator<(const Individual& o) const noexcept { return fvalue < o.fvalue; }
-    bool operator>(const Individual& o) const noexcept { return fvalue > o.fvalue; }
-    bool operator<=(const Individual& o) const noexcept { return fvalue <= o.fvalue; }
+    bool operator<(const Individual& o) const noexcept { return f_value < o.f_value; }
+    bool operator>(const Individual& o) const noexcept { return f_value > o.f_value; }
+    bool operator<=(const Individual& o) const noexcept { return f_value <= o.f_value; }
 };
 
 // ============================================================================
@@ -115,34 +121,36 @@ struct GrayIndividual : Individual {
     std::vector<double> steps;
 
     GrayIndividual(std::vector<uint64_t> gray_code,
-                   const std::vector<double>& xmin,
-                   const std::vector<double>& xmax,
+                   const std::vector<double>& x_min,
+                   const std::vector<double>& x_max,
                    const std::vector<int>& genes,
                    const FuncT& func)
-        : Individual(xmin, xmax, IndividualType::Gray),
+        : Individual(x_min, x_max, IndividualType::Gray),
           genes(genes),
           code(std::move(gray_code)) {
         init_steps();
-        fvalue = func(real_x());
+        f_value = func(real_x());
     }
 
     GrayIndividual(std::vector<uint64_t> gray_code,
-                   const std::vector<double>& xmin,
-                   const std::vector<double>& xmax,
+                   const std::vector<double>& x_min,
+                   const std::vector<double>& x_max,
                    const std::vector<int>& genes,
-                   double fval)
-        : Individual(xmin, xmax, IndividualType::Gray),
+                   double cached_f_value)
+        : Individual(x_min, x_max, IndividualType::Gray),
           genes(genes),
           code(std::move(gray_code)) {
         init_steps();
-        fvalue = fval;
+        f_value = cached_f_value;
     }
 
     std::vector<double> real_x() const override {
+        // Gray code is decoded to an integer grid and then mapped linearly to
+        // the bounded real-valued search space.
         int dim = (int)genes.size();
         std::vector<double> rx(dim);
         for (int i = 0; i < dim; ++i) {
-            rx[i] = xmin[i] + steps[i] * (double)gray_code_to_tc(code[i]);
+            rx[i] = x_min[i] + steps[i] * (double)gray_code_to_tc(code[i]);
         }
         return rx;
     }
@@ -158,8 +166,8 @@ struct GrayIndividual : Individual {
 
     static std::shared_ptr<GrayIndividual> from_decimal(
         const std::vector<uint64_t>& decimal,
-        const std::vector<double>& xmin,
-        const std::vector<double>& xmax,
+        const std::vector<double>& x_min,
+        const std::vector<double>& x_max,
         const std::vector<int>& genes,
         const FuncT& func) {
         int dim = (int)genes.size();
@@ -168,19 +176,23 @@ struct GrayIndividual : Individual {
             uint64_t max_val = (1ULL << genes[i]) - 1;
             gc[i] = tc_to_gray_code(std::min(decimal[i], max_val));
         }
-        return std::make_shared<GrayIndividual>(gc, xmin, xmax, genes, func);
+        return std::make_shared<GrayIndividual>(gc, x_min, x_max, genes, func);
     }
 
     std::shared_ptr<Individual> clone() const override {
-        auto p = std::make_shared<GrayIndividual>(code, xmin, xmax, genes, fvalue);
-        p->epn = epn;
+        auto p = std::make_shared<GrayIndividual>(code, x_min, x_max, genes, f_value);
+        p->n_ep = n_ep;
         return p;
     }
 
-    std::shared_ptr<GrayIndividual> mutate(double qmax_term, const FuncT& func) const {
-        int n = std::max(0, (int)std::floor(qmax_term - epn));
+    std::shared_ptr<GrayIndividual> mutate(double q_max_term, const FuncT& func) const {
+        // ICO mutation schedule (formula 7):
+        // q_c = max(0, floor((1 - t / tmax) * q_max - n_ep)).
+        int n = std::max(0, (int)std::floor(q_max_term - n_ep));
         if (n == 0) {
-            auto p = std::make_shared<GrayIndividual>(code, xmin, xmax, genes, fvalue);
+            // Reuse the cached objective value because the genotype is
+            // unchanged and no new function evaluation is required.
+            auto p = std::make_shared<GrayIndividual>(code, x_min, x_max, genes, f_value);
             return p;
         }
 
@@ -197,6 +209,7 @@ struct GrayIndividual : Individual {
 
         std::vector<int> positions(total_bits);
         std::iota(positions.begin(), positions.end(), 0);
+        // Partial Fisher-Yates shuffle selects distinct bits to flip.
         int flips = std::min(n, total_bits);
         for (int i = 0; i < flips; ++i) {
             int j = rand_int(i, total_bits - 1);
@@ -214,7 +227,7 @@ struct GrayIndividual : Individual {
             new_code[i] = v;
         }
 
-        auto p = std::make_shared<GrayIndividual>(new_code, xmin, xmax, genes, func);
+        auto p = std::make_shared<GrayIndividual>(new_code, x_min, x_max, genes, func);
         return p;
     }
 
@@ -238,8 +251,11 @@ struct GrayIndividual : Individual {
         auto bits_b = to_bits(b);
         std::vector<uint8_t> nb1(total_bits), nb2(total_bits);
 
+        // Use uniform crossover in 70% of matings; retain the original
+        // two-point crossover for the remaining 30%.
         if (rand_uniform(0.0, 1.0) < 0.7) {
             for (int i = 0; i < total_bits; ++i) {
+                // Each bit is inherited from either parent with probability 0.5.
                 if (rand_int(0, 1) == 1) {
                     nb1[i] = bits_b[i];
                     nb2[i] = bits_a[i];
@@ -275,7 +291,7 @@ struct GrayIndividual : Individual {
                 }
                 gc[i] = v;
             }
-            return std::make_shared<GrayIndividual>(gc, a.xmin, a.xmax, a.genes, func);
+            return std::make_shared<GrayIndividual>(gc, a.x_min, a.x_max, a.genes, func);
         };
 
         return {bits_to_ind(nb1), bits_to_ind(nb2)};
@@ -286,7 +302,7 @@ private:
         int dim = (int)genes.size();
         steps.resize(dim);
         for (int i = 0; i < dim; ++i) {
-            steps[i] = (xmax[i] - xmin[i]) / (double)((1ULL << genes[i]) - 1);
+            steps[i] = (x_max[i] - x_min[i]) / (double)((1ULL << genes[i]) - 1);
         }
     }
 };
@@ -299,40 +315,42 @@ struct RealIndividual : Individual {
     std::vector<double> x;
 
     RealIndividual(std::vector<double> x,
-                   const std::vector<double>& xmin,
-                   const std::vector<double>& xmax,
+                   const std::vector<double>& x_min,
+                   const std::vector<double>& x_max,
                    const FuncT& func)
-        : Individual(xmin, xmax, IndividualType::Real), x(std::move(x)) {
-        fvalue = func(this->x);
+        : Individual(x_min, x_max, IndividualType::Real), x(std::move(x)) {
+        f_value = func(this->x);
     }
 
     RealIndividual(std::vector<double> x,
-                   const std::vector<double>& xmin,
-                   const std::vector<double>& xmax,
-                   double fval)
-        : Individual(xmin, xmax, IndividualType::Real), x(std::move(x)) {
-        fvalue = fval;
+                   const std::vector<double>& x_min,
+                   const std::vector<double>& x_max,
+                   double cached_f_value)
+        : Individual(x_min, x_max, IndividualType::Real), x(std::move(x)) {
+        f_value = cached_f_value;
     }
 
     std::vector<double> real_x() const override { return x; }
 
     std::shared_ptr<Individual> clone() const override {
-        auto p = std::make_shared<RealIndividual>(x, xmin, xmax, fvalue);
-        p->epn = epn;
+        auto p = std::make_shared<RealIndividual>(x, x_min, x_max, f_value);
+        p->n_ep = n_ep;
         return p;
     }
 
     void update_f(const FuncT& func) {
-        fvalue = func(x);
+        f_value = func(x);
     }
 
-    void mutation(const FuncT& func, double pmax) {
-        epn += 1;
+    void mutation(const FuncT& func, double p_max) {
+        n_ep += 1;
         int dim = (int)x.size();
         for (int i = 0; i < dim; ++i) {
-            double range = xmax[i] - xmin[i];
-            double perturb = pmax * rand_uniform(-0.5, 0.5) * range / (double)epn;
-            x[i] = std::clamp(x[i] + perturb, xmin[i], xmax[i]);
+            double range = x_max[i] - x_min[i];
+            // Scale by the coordinate range, then decay the step as the same
+            // individual survives additional epidemics.
+            double perturb = p_max * rand_uniform(-0.5, 0.5) * range / (double)n_ep;
+            x[i] = std::clamp(x[i] + perturb, x_min[i], x_max[i]);
         }
         update_f(func);
     }
@@ -340,14 +358,14 @@ struct RealIndividual : Individual {
     static std::shared_ptr<RealIndividual> crossover(
         const RealIndividual& a, const RealIndividual& b,
         double alpha,
-        const std::vector<double>& xmin,
-        const std::vector<double>& xmax,
+        const std::vector<double>& x_min,
+        const std::vector<double>& x_max,
         const FuncT& func) {
         const Eigen::Index dim = static_cast<Eigen::Index>(a.x.size());
         Eigen::Map<const Eigen::ArrayXd> ax(a.x.data(), dim);
         Eigen::Map<const Eigen::ArrayXd> bx(b.x.data(), dim);
-        Eigen::Map<const Eigen::ArrayXd> min_x(xmin.data(), dim);
-        Eigen::Map<const Eigen::ArrayXd> max_x(xmax.data(), dim);
+        Eigen::Map<const Eigen::ArrayXd> min_x(x_min.data(), dim);
+        Eigen::Map<const Eigen::ArrayXd> max_x(x_max.data(), dim);
 
         const Eigen::ArrayXd lo = ax.min(bx);
         const Eigen::ArrayXd hi = ax.max(bx);
@@ -360,11 +378,13 @@ struct RealIndividual : Individual {
             u(i) = rand_uniform(0.0, 1.0);
         }
 
+        // BLX-alpha crossover samples the expanded parental interval and then
+        // clamps all coordinates to the legal search bounds.
         Eigen::ArrayXd child = lower + u * (upper - lower);
         child = child.max(min_x).min(max_x);
 
         std::vector<double> new_x(child.data(), child.data() + child.size());
-        return std::make_shared<RealIndividual>(std::move(new_x), xmin, xmax, func);
+        return std::make_shared<RealIndividual>(std::move(new_x), x_min, x_max, func);
     }
 };
 
@@ -374,7 +394,7 @@ struct RealIndividual : Individual {
 
 struct Country {
     std::vector<std::shared_ptr<Individual>> population;
-    std::vector<double> xmin, xmax;
+    std::vector<double> x_min, x_max;
     std::vector<int> genes;
     FuncT f;
     int N;
@@ -385,41 +405,45 @@ struct Country {
     Country* enemy = nullptr;
 
     Country(int N,
-            const std::vector<double>& xmin,
-            const std::vector<double>& xmax,
+            const std::vector<double>& x_min,
+            const std::vector<double>& x_max,
             const FuncT& func,
             IndividualType it,
             const std::vector<int>& genes)
-        : xmin(xmin), xmax(xmax), genes(genes), f(func), N(N), itype(it) {
-        int dim = (int)xmin.size();
+        : x_min(x_min), x_max(x_max), genes(genes), f(func), N(N), itype(it) {
+        int dim = (int)x_min.size();
         population.reserve(N);
 
         if (itype == IndividualType::Gray) {
-            std::vector<uint64_t> lmin(dim), lmax(dim);
+            // Each country starts inside a randomly selected hyper-rectangle,
+            // expressed on the integer grid used by the Gray representation.
+            std::vector<uint64_t> local_min(dim), local_max(dim);
             for (int d = 0; d < dim; ++d) {
                 uint64_t max_val = (1ULL << genes[d]) - 1;
-                lmin[d] = rand_uint64(0, max_val - 1);
-                lmax[d] = rand_uint64(lmin[d] + 1, max_val);
+                local_min[d] = rand_uint64(0, max_val - 1);
+                local_max[d] = rand_uint64(local_min[d] + 1, max_val);
             }
             for (int i = 0; i < N; ++i) {
                 std::vector<uint64_t> dec(dim);
                 for (int d = 0; d < dim; ++d) {
-                    dec[d] = rand_uint64(lmin[d], lmax[d]);
+                    dec[d] = rand_uint64(local_min[d], local_max[d]);
                 }
-                population.push_back(GrayIndividual::from_decimal(dec, xmin, xmax, genes, f));
+                population.push_back(GrayIndividual::from_decimal(dec, x_min, x_max, genes, f));
             }
         } else {
-            std::vector<double> lmin(dim), lmax(dim);
+            // Real-coded countries use the same localized initialization idea
+            // directly in the continuous coordinate space.
+            std::vector<double> local_min(dim), local_max(dim);
             for (int d = 0; d < dim; ++d) {
-                lmin[d] = rand_uniform(xmin[d], xmax[d]);
-                lmax[d] = rand_uniform(lmin[d], xmax[d]);
+                local_min[d] = rand_uniform(x_min[d], x_max[d]);
+                local_max[d] = rand_uniform(local_min[d], x_max[d]);
             }
             for (int i = 0; i < N; ++i) {
                 std::vector<double> x(dim);
                 for (int d = 0; d < dim; ++d) {
-                    x[d] = rand_uniform(lmin[d], lmax[d]);
+                    x[d] = rand_uniform(local_min[d], local_max[d]);
                 }
-                population.push_back(std::make_shared<RealIndividual>(std::move(x), xmin, xmax, f));
+                population.push_back(std::make_shared<RealIndividual>(std::move(x), x_min, x_max, f));
             }
         }
         sort_population();
@@ -430,25 +454,27 @@ struct Country {
 
     void sort_population() {
         std::sort(population.begin(), population.end(),
-                  [](const auto& a, const auto& b) { return a->fvalue < b->fvalue; });
+                  [](const auto& a, const auto& b) { return a->f_value < b->f_value; });
     }
 
     double best_f() const noexcept {
-        return population.empty() ? std::numeric_limits<double>::infinity() : population[0]->fvalue;
+        return population.empty() ? std::numeric_limits<double>::infinity() : population[0]->f_value;
     }
 
     double avg_f() const noexcept {
         if (population.empty()) return std::numeric_limits<double>::infinity();
         double s = 0.0;
-        for (const auto& ind : population) s += ind->fvalue;
+        for (const auto& ind : population) s += ind->f_value;
         return s / (double)population.size();
     }
 
     void select_action(std::vector<Country*>& all_countries,
-                       double pmotion, double ptrade, double pwar, double pepidemic, double pmigration) {
-        action = weighted_action_choice(pmotion, ptrade, pwar, pepidemic, pmigration);
+                       double p_motion, double p_trade, double p_war, double p_epidemic, double p_migration) {
+        action = weighted_action_choice(p_motion, p_trade, p_war, p_epidemic, p_migration);
 
         if (action == 1) {
+            // Trade and war are paired actions. Reserve an unassigned partner
+            // now so that it cannot be selected by another country this round.
             std::vector<Country*> candidates;
             for (auto* c : all_countries) {
                 if (c->action == -1 && c != this) candidates.push_back(c);
@@ -459,6 +485,7 @@ struct Country {
                 chosen->action = 1;
                 chosen->ally = this;
             } else {
+                // Pairing is impossible for the last unassigned country.
                 int fallback = rand_int(0, 2);
                 action = (fallback == 0) ? 0 : (fallback == 1 ? 3 : 4);
             }
@@ -479,7 +506,7 @@ struct Country {
         }
     }
 
-    void do_motion(double rmax = 2.0) {
+    void do_motion(double r_max = 2.0) {
         if (population.empty()) { action = -1; return; }
 
         if (itype == IndividualType::Gray) {
@@ -487,7 +514,7 @@ struct Country {
             for (int i = 1; i < size(); ++i) {
                 auto ind = std::static_pointer_cast<GrayIndividual>(population[i]);
                 auto dec = ind->decimal_x();
-                double r = rand_uniform(0.0, rmax);
+                double r = rand_uniform(0.0, r_max);
                 std::vector<uint64_t> new_dec(genes.size());
                 for (int d = 0; d < (int)genes.size(); ++d) {
                     int64_t diff = static_cast<int64_t>(best_dec[d]) - static_cast<int64_t>(dec[d]);
@@ -495,15 +522,17 @@ struct Country {
                     uint64_t max_val = (1ULL << genes[d]) - 1;
                     new_dec[d] = static_cast<uint64_t>(std::clamp(nd, (int64_t)0, (int64_t)max_val));
                 }
-                population[i] = GrayIndividual::from_decimal(new_dec, xmin, xmax, genes, f);
+                population[i] = GrayIndividual::from_decimal(new_dec, x_min, x_max, genes, f);
             }
         } else {
             const auto& best_x = std::static_pointer_cast<RealIndividual>(population[0])->x;
             for (int i = 1; i < size(); ++i) {
                 auto ind = std::static_pointer_cast<RealIndividual>(population[i]);
-                double r = rand_uniform(0.0, rmax);
+                // One scalar is sampled per individual, so motion remains on
+                // the current-to-leader line (important for rotated problems).
+                double r = rand_uniform(0.0, r_max);
                 for (int d = 0; d < (int)ind->x.size(); ++d) {
-                    ind->x[d] = std::clamp(ind->x[d] + r * (best_x[d] - ind->x[d]), xmin[d], xmax[d]);
+                    ind->x[d] = std::clamp(ind->x[d] + r * (best_x[d] - ind->x[d]), x_min[d], x_max[d]);
                 }
                 ind->update_f(f);
             }
@@ -512,7 +541,7 @@ struct Country {
         action = -1;
     }
 
-    void do_epidemic(double elite_frac, double dead_frac, double pmax_real, double qmax_term_gray) {
+    void do_epidemic(double elite_frac, double dead_frac, double p_max_real, double q_max_term_gray) {
         int n = size();
         int n_elite = (int)std::ceil(elite_frac * n);
         int n_dead  = (int)std::ceil(dead_frac * n);
@@ -523,6 +552,8 @@ struct Country {
             return;
         }
 
+        // The population is sorted, so removing from the tail kills the worst
+        // individuals while the first n_elite individuals remain untouched.
         if (n_dead > 0) {
             population.erase(population.end() - n_dead, population.end());
         }
@@ -530,12 +561,12 @@ struct Country {
         for (int i = n_elite; i < size(); ++i) {
             if (itype == IndividualType::Gray) {
                 auto ind = std::static_pointer_cast<GrayIndividual>(population[i]);
-                auto new_ind = ind->mutate(qmax_term_gray, f);
-                new_ind->epn = ind->epn + 1;
+                auto new_ind = ind->mutate(q_max_term_gray, f);
+                new_ind->n_ep = ind->n_ep + 1;
                 population[i] = new_ind;
             } else {
                 auto ind = std::static_pointer_cast<RealIndividual>(population[i]);
-                ind->mutation(f, pmax_real);
+                ind->mutation(f, p_max_real);
             }
         }
         sort_population();
@@ -547,6 +578,8 @@ struct Country {
         if (n <= 1) { action = -1; return; }
 
         int n_migrate = std::clamp((int)std::ceil(migrate_frac * n), 1, n - 1);
+        // Replace the worst fraction with globally sampled individuals to
+        // inject diversity without discarding the country's leader.
         population.erase(population.end() - n_migrate, population.end());
 
         for (int i = 0; i < n_migrate; ++i) {
@@ -556,12 +589,14 @@ struct Country {
         action = -1;
     }
 
-    void reproduction(int nmin, int nmax, double pmin, double pmax,
-                      double fmin, double fmax, int ti, int tmax) {
+    void reproduction(int n_min, int n_max, double p_min, double p_max,
+                      double f_min, double f_max, int iteration, int t_max) {
         if (size() < 2) return;
         double avg = avg_f();
-        double n_frac = (fmax - avg) / (fmax - fmin + 1e-15);
-        int n = std::clamp((int)std::ceil((nmax - nmin) * n_frac + nmin), nmin, nmax);
+        // Better countries reproduce more. The small denominator guard also
+        // keeps the formula defined when country averages coincide.
+        double n_frac = (f_max - avg) / (f_max - f_min + 1e-15);
+        int n = std::clamp((int)std::ceil((n_max - n_min) * n_frac + n_min), n_min, n_max);
 
         if (itype == IndividualType::Gray) {
             for (int i = 0; i < n; ++i) {
@@ -576,8 +611,9 @@ struct Country {
             }
         } else {
             double p = std::clamp(
-                pmax - (pmax - pmin) * (1.0 - (double)ti / tmax) * ((avg - fmin) / (fmax - fmin + 1e-15)),
-                pmin, pmax
+                p_max - (p_max - p_min) * (1.0 - (double)iteration / t_max) *
+                    ((avg - f_min) / (f_max - f_min + 1e-15)),
+                p_min, p_max
             );
             for (int i = 0; i < 2 * n; ++i) {
                 int k1 = rand_int(0, size() - 1);
@@ -585,17 +621,19 @@ struct Country {
                 while (k2 == k1) k2 = rand_int(0, size() - 1);
                 auto a = std::static_pointer_cast<RealIndividual>(population[k1]);
                 auto b = std::static_pointer_cast<RealIndividual>(population[k2]);
-                population.push_back(RealIndividual::crossover(*a, *b, p, xmin, xmax, f));
+                population.push_back(RealIndividual::crossover(*a, *b, p, x_min, x_max, f));
             }
         }
         sort_population();
     }
 
-    void extinction(int mmin, int mmax, double fmin, double fmax) {
+    void extinction(int m_min, int m_max, double f_min, double f_max) {
         double avg = avg_f();
+        // Worse countries lose more individuals, complementing the adaptive
+        // reproduction rule above.
         int m = std::clamp(
-            (int)((mmax - mmin) * ((avg - fmin) / (fmax - fmin + 1e-15)) + mmin),
-            mmin, mmax
+            (int)((m_max - m_min) * ((avg - f_min) / (f_max - f_min + 1e-15)) + m_min),
+            m_min, m_max
         );
         if (m >= size()) {
             population.clear();
@@ -611,49 +649,54 @@ struct Country {
     }
 
     void update_individual_type() {
-        int dim = (int)xmin.size();
+        // A trade or war may move individuals between Gray- and real-coded
+        // countries. Convert their representation without re-evaluating the
+        // objective because the represented real point is unchanged.
+        int dim = (int)x_min.size();
         for (auto& ind : population) {
             if (ind->itype == itype) continue;
             if (itype == IndividualType::Real) {
                 auto rx = ind->real_x();
-                auto ni = std::make_shared<RealIndividual>(std::move(rx), xmin, xmax, ind->fvalue);
-                ni->epn = ind->epn;
+                auto ni = std::make_shared<RealIndividual>(std::move(rx), x_min, x_max, ind->f_value);
+                ni->n_ep = ind->n_ep;
                 ind = ni;
             } else {
                 auto rx = ind->real_x();
                 std::vector<uint64_t> gc(dim);
                 for (int d = 0; d < dim; ++d) {
-                    double step = (xmax[d] - xmin[d]) / (double)((1ULL << genes[d]) - 1);
-                    int64_t v = (int64_t)std::round((rx[d] - xmin[d]) / step);
+                    double step = (x_max[d] - x_min[d]) / (double)((1ULL << genes[d]) - 1);
+                    int64_t v = (int64_t)std::round((rx[d] - x_min[d]) / step);
                     uint64_t max_v = (1ULL << genes[d]) - 1;
                     gc[d] = tc_to_gray_code((uint64_t)std::clamp(v, (int64_t)0, (int64_t)max_v));
                 }
-                auto ni = std::make_shared<GrayIndividual>(gc, xmin, xmax, genes, ind->fvalue);
-                ni->epn = ind->epn;
+                auto ni = std::make_shared<GrayIndividual>(gc, x_min, x_max, genes, ind->f_value);
+                ni->n_ep = ind->n_ep;
                 ind = ni;
             }
         }
     }
 
     std::shared_ptr<Individual> make_random_individual() const {
-        const int dim = static_cast<int>(xmin.size());
+        const int dim = static_cast<int>(x_min.size());
         if (itype == IndividualType::Gray) {
             std::vector<uint64_t> decimal(dim);
             for (int d = 0; d < dim; ++d) {
                 const uint64_t max_val = (1ULL << genes[d]) - 1;
                 decimal[d] = rand_uint64(0, max_val);
             }
-            return GrayIndividual::from_decimal(decimal, xmin, xmax, genes, f);
+            return GrayIndividual::from_decimal(decimal, x_min, x_max, genes, f);
         }
         std::vector<double> x(dim);
         for (int d = 0; d < dim; ++d) {
-            x[d] = rand_uniform(xmin[d], xmax[d]);
+            x[d] = rand_uniform(x_min[d], x_max[d]);
         }
-        return std::make_shared<RealIndividual>(std::move(x), xmin, xmax, f);
+        return std::make_shared<RealIndividual>(std::move(x), x_min, x_max, f);
     }
 
     static void do_trade(Country& c1, Country& c2, int k) {
         int actual_k = k;
+        // Small countries exchange at most half of their current population,
+        // preventing the operation from emptying either participant.
         if (c1.size() <= k || c2.size() <= k) {
             actual_k = std::min(c1.size(), c2.size()) / 2;
         }
@@ -676,6 +719,7 @@ struct Country {
 
         auto remove_by_idx = [](std::vector<std::shared_ptr<Individual>>& pop, const std::vector<int>& idx_in) {
             std::vector<int> idx = idx_in;
+            // Descending erasure preserves the validity of the remaining indices.
             std::sort(idx.begin(), idx.end(), std::greater<int>());
             for (int i : idx) pop.erase(pop.begin() + i);
         };
@@ -690,6 +734,8 @@ struct Country {
         remove_by_idx(c1.population, idx1);
         remove_by_idx(c2.population, idx2);
 
+        // Clones are exchanged and then converted to the representation used
+        // by their destination country.
         for (auto& t : t2) c1.population.push_back(t);
         for (auto& t : t1) c2.population.push_back(t);
 
@@ -704,7 +750,7 @@ struct Country {
 
     static std::shared_ptr<Individual> recruit_from_duel(
         const Individual& winner, const Individual& loser,
-        Country& home, double rmax) {
+        Country& home, double r_max) {
         auto wx = winner.real_x();
         auto lx = loser.real_x();
         const int dim = static_cast<int>(wx.size());
@@ -716,6 +762,7 @@ struct Country {
         }
         const double dist = std::sqrt(dist2);
 
+        // Generate one isotropic noise direction for the entire individual.
         std::vector<double> noise(dim);
         double nrm2 = 0.0;
         for (int d = 0; d < dim; ++d) {
@@ -724,30 +771,32 @@ struct Country {
         }
         const double nrm = std::sqrt(nrm2) + 1e-12;
 
-        const double alpha = rand_uniform(0.1, std::max(0.15, rmax * 0.4));
+        // Reflect beyond the winner and add a small orthogonal-style jitter;
+        // this avoids generating every recruit on a single line.
+        const double alpha = rand_uniform(0.1, std::max(0.15, r_max * 0.4));
         const double jitter = 0.05 * dist;
 
         std::vector<double> nx(dim);
         for (int d = 0; d < dim; ++d) {
             const double reflected = wx[d] + alpha * (wx[d] - lx[d]);
-            nx[d] = std::clamp(reflected + jitter * (noise[d] / nrm), home.xmin[d], home.xmax[d]);
+            nx[d] = std::clamp(reflected + jitter * (noise[d] / nrm), home.x_min[d], home.x_max[d]);
         }
 
         if (home.itype == IndividualType::Real) {
-            return std::make_shared<RealIndividual>(std::move(nx), home.xmin, home.xmax, home.f);
+            return std::make_shared<RealIndividual>(std::move(nx), home.x_min, home.x_max, home.f);
         }
 
         std::vector<uint64_t> dec(dim);
         for (int d = 0; d < dim; ++d) {
-            const double step = (home.xmax[d] - home.xmin[d]) / static_cast<double>((1ULL << home.genes[d]) - 1);
-            const int64_t v = static_cast<int64_t>(std::round((nx[d] - home.xmin[d]) / step));
+            const double step = (home.x_max[d] - home.x_min[d]) / static_cast<double>((1ULL << home.genes[d]) - 1);
+            const int64_t v = static_cast<int64_t>(std::round((nx[d] - home.x_min[d]) / step));
             const uint64_t max_v = (1ULL << home.genes[d]) - 1;
             dec[d] = static_cast<uint64_t>(std::clamp(v, (int64_t)0, static_cast<int64_t>(max_v)));
         }
-        return GrayIndividual::from_decimal(dec, home.xmin, home.xmax, home.genes, home.f);
+        return GrayIndividual::from_decimal(dec, home.x_min, home.x_max, home.genes, home.f);
     }
 
-    static void do_war(Country& c1, Country& c2, int l, double rmax = 2.0) {
+    static void do_war(Country& c1, Country& c2, int l, double r_max = 2.0) {
         int actual_l = l;
         if (c1.size() <= l || c2.size() <= l) {
             actual_l = std::min(c1.size(), c2.size());
@@ -777,6 +826,7 @@ struct Country {
         const auto idx1 = pick_indices(c1.size(), actual_l);
         const auto idx2 = pick_indices(c2.size(), actual_l);
 
+        // Recruited warriors are temporarily removed from their countries.
         std::vector<std::shared_ptr<Individual>> war1, war2;
         war1.reserve(actual_l);
         war2.reserve(actual_l);
@@ -791,21 +841,26 @@ struct Country {
         survivors1.reserve(actual_l);
         survivors2.reserve(actual_l);
 
+        // Each duel keeps its winner and creates a replacement in the losing
+        // country. Only surviving warriors can later become prisoners.
         for (int i = 0; i < actual_l; ++i) {
             if (*war1[i] < *war2[i]) {
                 wins1++;
                 survivors1.push_back(war1[i]);
-                c2.population.push_back(recruit_from_duel(*war1[i], *war2[i], c2, rmax));
+                c2.population.push_back(recruit_from_duel(*war1[i], *war2[i], c2, r_max));
             } else if (*war2[i] < *war1[i]) {
                 wins2++;
                 survivors2.push_back(war2[i]);
-                c1.population.push_back(recruit_from_duel(*war2[i], *war1[i], c1, rmax));
+                c1.population.push_back(recruit_from_duel(*war2[i], *war1[i], c1, r_max));
             } else {
                 survivors1.push_back(war1[i]);
                 survivors2.push_back(war2[i]);
             }
         }
 
+        // Prisoners move toward the winning country's capital. Real-coded
+        // winners can assimilate immediately; Gray conversion is performed by
+        // update_individual_type() after all prisoners have been transferred.
         auto assimilate = [](Country& winner, const std::shared_ptr<Individual>& prisoner) {
             if (winner.empty()) {
                 winner.population.push_back(prisoner);
@@ -815,17 +870,19 @@ struct Country {
             auto px = prisoner->real_x();
             const double r = rand_uniform(0.35, 0.85);
             for (int d = 0; d < (int)px.size(); ++d) {
-                px[d] = std::clamp(px[d] + r * (capital[d] - px[d]), winner.xmin[d], winner.xmax[d]);
+                px[d] = std::clamp(px[d] + r * (capital[d] - px[d]), winner.x_min[d], winner.x_max[d]);
             }
             if (winner.itype == IndividualType::Real) {
-                auto ni = std::make_shared<RealIndividual>(std::move(px), winner.xmin, winner.xmax, winner.f);
-                ni->epn = prisoner->epn;
+                auto ni = std::make_shared<RealIndividual>(std::move(px), winner.x_min, winner.x_max, winner.f);
+                ni->n_ep = prisoner->n_ep;
                 winner.population.push_back(std::move(ni));
             } else {
                 winner.population.push_back(prisoner);
             }
         };
 
+        // The country with more duel victories receives all surviving enemy
+        // warriors. A tied war returns survivors to their original countries.
         if (wins1 > wins2) {
             for (auto& w : survivors1) c1.population.push_back(w);
             for (auto& p : survivors2) assimilate(c1, p);
@@ -856,16 +913,16 @@ public:
     using Vec = std::vector<double>;
 
     struct Params {
-        std::vector<double> xmin, xmax;
+        std::vector<double> x_min, x_max;
         std::vector<int> genes;
-        double pmin = 0.1;
-        double pmax = 0.5;
+        double p_min = 0.1;
+        double p_max = 0.5;
         int M = 10;
         int N = 20;
-        int nmin = 1;
-        int nmax = 5;
-        int mmin = 1;
-        int mmax = 3;
+        int n_min = 1;
+        int n_max = 5;
+        int m_min = 1;
+        int m_max = 3;
         int k = 3;
         int l = 3;
         double ep_elite = 0.2;
@@ -875,88 +932,93 @@ public:
         double gray_percent = 0.5;
         bool printing = true;
 
-        // Поля 5 действий (основные и псевдонимы)
-        double pmotion    = 0.25;
-        double ptrade     = 0.20;
-        double pwar       = 0.20;
-        double pepidemic  = 0.20;
-        double pmigration = 0.15;
-
+        // Probabilities of the five country actions. The order used throughout
+        // the implementation is Motion, Trade, War, Epidemic, Migration.
+        // Values are normalized during initialization if they do not sum to 1.
         double p_motion    = 0.25;
         double p_trade     = 0.20;
         double p_war       = 0.20;
         double p_epidemic  = 0.20;
         double p_migration = 0.15;
 
-        // Псевдонимы для совместимости с кодом с подчеркиваниями
-        std::vector<double> x_min;
-        std::vector<double> x_max;
-        double p_min = 0.1;
-        double p_max = 0.5;
-        int n_min = 1;
-        int n_max = 5;
-        int m_min = 1;
-        int m_max = 3;
+        // Legacy compact aliases retained for meta_optimization_v2/v3 and
+        // other existing callers. New code should use the underscored fields
+        // above. sync_all_fields() imports non-default legacy values and then
+        // mirrors the canonical values back to these aliases.
+        std::vector<double> xmin;
+        std::vector<double> xmax;
+        double pmin = 0.1;
+        double pmax = 0.5;
+        int nmin = 1;
+        int nmax = 5;
+        int mmin = 1;
+        int mmax = 3;
+        double pmotion    = 0.25;
+        double ptrade     = 0.20;
+        double pwar       = 0.20;
+        double pepidemic  = 0.20;
+        double pmigration = 0.15;
 
-        bool   adaptive_actions = true;
-        double action_alpha     = 0.076;   // Скорость обучения EMA
-        double action_pmin      = 0.05;   // Минимальный гарантированный порог
-        double action_warmup_frac = 0.14; // Доля итераций warm-up
+        bool   adaptive_actions   = true;
+        double action_alpha       = 0.076; // EMA learning rate for action rewards.
+        double action_pmin        = 0.05;  // Probability floor for every action.
+        double action_warmup_frac = 0.14;  // Fraction of tmax used for warm-up.
 
-        // Настройки глобального периодического рестарта худших стран
-        int    stagnation_limit     = 25;   // Число итераций без глобального улучшения для рестарта
-        double restart_country_frac = 0.15; // Доля худших стран для полного пересоздания
-        double migration_frac       = 0.30; // Доля особей, телепортируемых при действии Migration
+        // Global diversification controls.
+        int    stagnation_limit     = 25;   // Iterations without global improvement.
+        double restart_country_frac = 0.15; // Worst-country fraction to rebuild.
+        double migration_frac       = 0.30; // Individuals replaced during migration.
 
         void sync_all_fields() {
-            if (!x_min.empty()) xmin = x_min;
-            else x_min = xmin;
+            if (!xmin.empty()) x_min = xmin;
+            if (!xmax.empty()) x_max = xmax;
+            if (pmin != 0.1) p_min = pmin;
+            if (pmax != 0.5) p_max = pmax;
+            if (nmin != 1) n_min = nmin;
+            if (nmax != 5) n_max = nmax;
+            if (mmin != 1) m_min = mmin;
+            if (mmax != 3) m_max = mmax;
 
-            if (!x_max.empty()) xmax = x_max;
-            else x_max = xmax;
-
-            if (p_min != 0.1) pmin = p_min;
-            else p_min = pmin;
-
-            if (p_max != 0.5) pmax = p_max;
-            else p_max = pmax;
-
-            if (n_min != 1) nmin = n_min;
-            else n_min = nmin;
-
-            if (n_max != 5) nmax = n_max;
-            else n_max = nmax;
-
-            if (m_min != 1) mmin = m_min;
-            else m_min = mmin;
-
-            if (m_max != 3) mmax = m_max;
-            else m_max = mmax;
-
-            if (p_motion != 0.25 || p_trade != 0.20 || p_war != 0.20 || p_epidemic != 0.20 || p_migration != 0.15) {
-                pmotion = p_motion;
-                ptrade = p_trade;
-                pwar = p_war;
-                pepidemic = p_epidemic;
-                pmigration = p_migration;
-            } else {
+            if (pmotion != 0.25 || ptrade != 0.20 || pwar != 0.20 ||
+                pepidemic != 0.20 || pmigration != 0.15) {
                 p_motion = pmotion;
                 p_trade = ptrade;
                 p_war = pwar;
                 p_epidemic = pepidemic;
                 p_migration = pmigration;
             }
+
+            sync_legacy_aliases();
+        }
+
+        void sync_legacy_aliases() {
+            xmin = x_min;
+            xmax = x_max;
+            pmin = p_min;
+            pmax = p_max;
+            nmin = n_min;
+            nmax = n_max;
+            mmin = m_min;
+            mmax = m_max;
+            pmotion = p_motion;
+            ptrade = p_trade;
+            pwar = p_war;
+            pepidemic = p_epidemic;
+            pmigration = p_migration;
         }
     };
 
     struct ActionAdaptation {
-        // 0: motion, 1: trade, 2: war, 3: epidemic, 4: migration
+        // Reward/probability indices match the action codes used by Country.
+        // 0: motion, 1: trade, 2: war, 3: epidemic, 4: migration.
         std::array<double, 5> reward = {0.0, 0.0, 0.0, 0.0, 0.0};
         std::array<double, 5> probs  = {0.25, 0.20, 0.20, 0.20, 0.15};
 
         void update(int action_idx, double f_before, double f_after, long calls_spent, double alpha) {
             if (action_idx < 0 || action_idx >= 5) return;
             if (calls_spent <= 0) calls_spent = 1;
+            // Credit is objective improvement per function evaluation. The EMA
+            // makes adaptation responsive without discarding prior evidence.
             double improvement = std::max(0.0, f_before - f_after);
             double credit = improvement / (double)calls_spent;
             reward[action_idx] = (1.0 - alpha) * reward[action_idx] + alpha * credit;
@@ -969,6 +1031,7 @@ public:
                 probs = {0.25, 0.20, 0.20, 0.20, 0.15};
                 return;
             }
+            // Probability matching with a guaranteed floor for every action.
             double residual = 1.0 - 5.0 * p_min;
             for (int i = 0; i < 5; ++i) {
                 probs[i] = p_min + residual * (reward[i] / sum);
@@ -986,25 +1049,32 @@ public:
     CountriesAlgorithm(FuncT func, const Vec& x_min, const Vec& x_max, Params params)
         : p_(std::move(params)),
           calls_count_(std::make_shared<long>(0)) {
-        p_.xmin = x_min;
-        p_.xmax = x_max;
         p_.x_min = x_min;
         p_.x_max = x_max;
+        p_.xmin = x_min;
+        p_.xmax = x_max;
         p_.sync_all_fields();
         init_internal(std::move(func));
     }
 
     void init_internal(FuncT func) {
-        double sum_p = p_.pmotion + p_.ptrade + p_.pwar + p_.pepidemic + p_.pmigration;
+        double sum_p = p_.p_motion + p_.p_trade + p_.p_war + p_.p_epidemic + p_.p_migration;
+        // Accept approximately normalized input and repair small/user-supplied
+        // deviations so weighted selection always receives a valid total.
+        if (sum_p <= 0.0) {
+            throw std::invalid_argument("The sum of action probabilities must be positive");
+        }
         if (std::abs(sum_p - 1.0) > 1e-5) {
-            p_.pmotion /= sum_p;
-            p_.ptrade /= sum_p;
-            p_.pwar /= sum_p;
-            p_.pepidemic /= sum_p;
-            p_.pmigration /= sum_p;
-            p_.sync_all_fields();
+            p_.p_motion /= sum_p;
+            p_.p_trade /= sum_p;
+            p_.p_war /= sum_p;
+            p_.p_epidemic /= sum_p;
+            p_.p_migration /= sum_p;
+            p_.sync_legacy_aliases();
         }
 
+        // The shared counter survives copies/moves of the objective wrapper and
+        // of CountriesAlgorithm instances stored inside std::function.
         auto counter = calls_count_;
         f_ = [counter, user_func = std::move(func)](const std::vector<double>& x) -> double {
             (*counter)++;
@@ -1012,7 +1082,8 @@ public:
         };
 
         if (p_.genes.empty()) {
-            p_.genes.assign(p_.xmin.size(), 32);
+            // A 32-bit Gray grid is the default for every problem dimension.
+            p_.genes.assign(p_.x_min.size(), 32);
         }
 
         init_countries();
@@ -1020,18 +1091,18 @@ public:
 
     void init_countries() {
         countries_.clear();
-        int gray_M = (int)std::round(p_.gray_percent * p_.M);
-        int real_M = p_.M - gray_M;
+        int gray_countries = (int)std::round(p_.gray_percent * p_.M);
+        int real_countries = p_.M - gray_countries;
         countries_.reserve(p_.M);
 
-        for (int i = 0; i < gray_M; ++i) {
+        for (int i = 0; i < gray_countries; ++i) {
             countries_.push_back(std::make_unique<Country>(
-                p_.N, p_.xmin, p_.xmax, f_, IndividualType::Gray, p_.genes
+                p_.N, p_.x_min, p_.x_max, f_, IndividualType::Gray, p_.genes
             ));
         }
-        for (int i = 0; i < real_M; ++i) {
+        for (int i = 0; i < real_countries; ++i) {
             countries_.push_back(std::make_unique<Country>(
-                p_.N, p_.xmin, p_.xmax, f_, IndividualType::Real, p_.genes
+                p_.N, p_.x_min, p_.x_max, f_, IndividualType::Real, p_.genes
             ));
         }
     }
@@ -1041,26 +1112,34 @@ public:
         std::optional<double> y_epsilon = std::nullopt,
         std::optional<long> max_calls = std::nullopt) {
 
-        double canonical_y = f_(canonical_x);
+        // These arguments remain in the interface for benchmark compatibility.
+        // Their stopping rules are documented below but intentionally disabled.
+        (void)epsilon;
+        (void)y_epsilon;
         Vec best_x;
         double best_f = std::numeric_limits<double>::infinity();
-        long ti = 0;
+        long iteration = 0;
 
         if (!countries_.empty() && !countries_[0]->population.empty()) {
             best_x = countries_[0]->population[0]->real_x();
-            best_f = countries_[0]->population[0]->fvalue;
+            best_f = countries_[0]->population[0]->f_value;
         }
 
-        long warmup_iters = static_cast<long>(std::round(p_.action_warmup_frac * static_cast<double>(p_.tmax)));
-        int iters_without_improvement = 0;
+        // During warm-up, actions collect reward statistics while their initial
+        // probabilities remain fixed, reducing adaptation to early noise.
+        long warmup_iterations = static_cast<long>(std::round(
+            p_.action_warmup_frac * static_cast<double>(p_.tmax)));
+        int iterations_without_improvement = 0;
 
-        for (ti = 1; ti <= p_.tmax; ++ti) {
-            double progress = static_cast<double>(ti - 1) / std::max(1, p_.tmax - 1);
-            double rmax = 2.0 - 0.8 * std::pow(progress, 0.6);
+        for (iteration = 1; iteration <= p_.tmax; ++iteration) {
+            double progress = static_cast<double>(iteration - 1) / std::max(1, p_.tmax - 1);
+            // Motion radius decreases slowly from 2.0 to 1.2; exponent 0.6
+            // deliberately preserves exploration during early iterations.
+            double r_max = 2.0 - 0.8 * std::pow(progress, 0.6);
 
             if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
                 if (p_.printing) std::cout << "Max calls reached: " << *calls_count_ << std::endl;
-                return {best_x, best_f, ti};
+                return {best_x, best_f, iteration};
             }
 
             if (countries_.size() == 1) {
@@ -1073,12 +1152,13 @@ public:
 
             for (auto* c : ptrs) {
                 if (c->action == -1) {
-                    c->select_action(ptrs, p_.pmotion, p_.ptrade, p_.pwar, p_.pepidemic, p_.pmigration);
+                    c->select_action(ptrs, p_.p_motion, p_.p_trade, p_.p_war, p_.p_epidemic, p_.p_migration);
                 }
             }
 
-            double qmax_term = (1.0 - (double)ti / p_.tmax) * p_.max_mutation;
+            double q_max_term = (1.0 - (double)iteration / p_.tmax) * p_.max_mutation;
 
+            // Save each country's pre-action average for reward attribution.
             std::vector<double> avg_before(countries_.size());
             for (size_t i = 0; i < countries_.size(); ++i) {
                 avg_before[i] = countries_[i]->avg_f();
@@ -1086,37 +1166,43 @@ public:
 
             for (size_t i = 0; i < countries_.size(); ++i) {
                 auto& c = countries_[i];
-                int act = c->action;
+                int action_index = c->action;
                 long calls_before = *calls_count_;
 
-                if (act == 0) {
-                    c->do_motion(rmax);
-                } else if (act == 1 && c->ally != nullptr) {
+                if (action_index == 0) {
+                    c->do_motion(r_max);
+                } else if (action_index == 1 && c->ally != nullptr) {
                     Country::do_trade(*c, *c->ally, p_.k);
-                } else if (act == 2 && c->enemy != nullptr) {
-                    Country::do_war(*c, *c->enemy, p_.l, rmax);
-                } else if (act == 3) {
-                    double pmax = (c->itype == IndividualType::Gray) ? qmax_term : p_.pmax;
-                    c->do_epidemic(p_.ep_elite, p_.ep_dead, pmax, qmax_term);
-                } else if (act == 4) {
+                } else if (action_index == 2 && c->enemy != nullptr) {
+                    Country::do_war(*c, *c->enemy, p_.l, r_max);
+                } else if (action_index == 3) {
+                    double p_max = (c->itype == IndividualType::Gray) ? q_max_term : p_.p_max;
+                    c->do_epidemic(p_.ep_elite, p_.ep_dead, p_max, q_max_term);
+                } else if (action_index == 4) {
                     c->do_migration(p_.migration_frac);
                 }
 
-                if (p_.adaptive_actions && act != -1) {
+                // Paired operations reset the partner's action internally, so
+                // reward is naturally assigned only to the initiating country.
+                if (p_.adaptive_actions && action_index != -1) {
                     long calls_after = *calls_count_;
                     double f_after = c->avg_f();
-                    action_adapt_.update(act, avg_before[i], f_after, calls_after - calls_before, p_.action_alpha);
+                    action_adapt_.update(action_index, avg_before[i], f_after,
+                                         calls_after - calls_before, p_.action_alpha);
                 }
             }
 
-            if (p_.adaptive_actions && ti >= warmup_iters) {
+            // Recompute probabilities for the next iteration after warm-up.
+            if (p_.adaptive_actions && iteration >= warmup_iterations) {
                 action_adapt_.renormalize(p_.action_pmin);
-                p_.pmotion    = action_adapt_.probs[0];
-                p_.ptrade     = action_adapt_.probs[1];
-                p_.pwar       = action_adapt_.probs[2];
-                p_.pepidemic  = action_adapt_.probs[3];
-                p_.pmigration = action_adapt_.probs[4];
-                p_.sync_all_fields();
+                p_.p_motion    = action_adapt_.probs[0];
+                p_.p_trade     = action_adapt_.probs[1];
+                p_.p_war       = action_adapt_.probs[2];
+                p_.p_epidemic  = action_adapt_.probs[3];
+                p_.p_migration = action_adapt_.probs[4];
+                // Internal adaptation updates canonical fields; only mirror
+                // them outward, otherwise legacy input could overwrite them.
+                p_.sync_legacy_aliases();
             }
 
             remove_empty();
@@ -1125,15 +1211,15 @@ public:
             std::sort(countries_.begin(), countries_.end(),
                       [](const auto& a, const auto& b) { return a->avg_f() < b->avg_f(); });
 
-            double fmin = countries_.front()->avg_f();
-            double fmax = countries_.back()->avg_f();
+            double f_min = countries_.front()->avg_f();
+            double f_max = countries_.back()->avg_f();
 
-            if (fmin == fmax && countries_.size() > 1) {
+            if (f_min == f_max && countries_.size() > 1) {
                 restart_stagnant_countries(0.5);
                 std::sort(countries_.begin(), countries_.end(),
                           [](const auto& a, const auto& b) { return a->avg_f() < b->avg_f(); });
-                fmin = countries_.front()->avg_f();
-                fmax = countries_.back()->avg_f();
+                f_min = countries_.front()->avg_f();
+                f_max = countries_.back()->avg_f();
             }
 
             std::vector<std::shared_ptr<Individual>> e_individuals;
@@ -1142,8 +1228,9 @@ public:
                     if (c->size() == 1) e_individuals.push_back(c->population[0]);
                     continue;
                 }
-                c->reproduction(p_.nmin, p_.nmax, p_.pmin, p_.pmax, fmin, fmax, (int)ti, p_.tmax);
-                c->extinction(p_.mmin, p_.mmax, fmin, fmax);
+                c->reproduction(p_.n_min, p_.n_max, p_.p_min, p_.p_max,
+                                f_min, f_max, (int)iteration, p_.tmax);
+                c->extinction(p_.m_min, p_.m_max, f_min, f_max);
             }
 
             remove_empty();
@@ -1162,21 +1249,22 @@ public:
 
             if (countries_.empty()) break;
 
-            if (countries_[0]->population[0]->fvalue < best_f) {
-                best_f = countries_[0]->population[0]->fvalue;
+            if (countries_[0]->population[0]->f_value < best_f) {
+                best_f = countries_[0]->population[0]->f_value;
                 best_x = countries_[0]->population[0]->real_x();
-                iters_without_improvement = 0;
+                iterations_without_improvement = 0;
             } else {
-                iters_without_improvement++;
+                iterations_without_improvement++;
             }
 
-            if (iters_without_improvement >= p_.stagnation_limit && countries_.size() > 1) {
+            if (iterations_without_improvement >= p_.stagnation_limit && countries_.size() > 1) {
                 restart_stagnant_countries(p_.restart_country_frac);
-                iters_without_improvement = 0;
+                iterations_without_improvement = 0;
             }
 
-            if (p_.printing && ti % 50 == 0) {
-                std::cout << "Iter: " << ti << ", Best F: " << best_f << ", Calls: " << *calls_count_ << std::endl;
+            if (p_.printing && iteration % 50 == 0) {
+                std::cout << "Iter: " << iteration << ", Best F: " << best_f
+                          << ", Calls: " << *calls_count_ << std::endl;
             }
 
             double dist = 0.0;
@@ -1184,19 +1272,25 @@ public:
                 double diff = best_x[i] - canonical_x[i];
                 dist += diff * diff;
             }
+            // Coordinate-based stopping is intentionally disabled for CEC2017:
+            // the shifted optimum coordinates are hidden from the optimizer.
             // if (std::sqrt(dist) <= epsilon) {
-            //     return {best_x, best_f, ti};
+            //     return {best_x, best_f, iteration};
             // }
 
+            // Value-based stopping is also disabled here because canonical_x
+            // is a benchmark placeholder, not necessarily the true optimum.
+            // The benchmark harness evaluates success against the known bias.
+            // const double canonical_y = f_(canonical_x);
             // if (y_epsilon.has_value() && std::abs(best_f - canonical_y) <= y_epsilon.value()) {
-            //     return {best_x, best_f, ti};
+            //     return {best_x, best_f, iteration};
             // }
             // if (best_f <= canonical_y) {
-            //     return {best_x, best_f, ti};
+            //     return {best_x, best_f, iteration};
             // }
         }
 
-        return {best_x, best_f, ti};
+        return {best_x, best_f, iteration};
     }
 
 private:
@@ -1207,6 +1301,7 @@ private:
     ActionAdaptation action_adapt_;
 
     void remove_empty() {
+        // Country-level operations may eliminate every resident.
         countries_.erase(
             std::remove_if(countries_.begin(), countries_.end(),
                            [](const auto& c) { return c->empty(); }),
@@ -1217,39 +1312,45 @@ private:
     void add_individual_to_random_country(const std::shared_ptr<Individual>& ind) {
         if (countries_.empty()) return;
         auto& rc = countries_[rand_int(0, (int)countries_.size() - 1)];
-        int dim = (int)rc->xmin.size();
+        int dim = (int)rc->x_min.size();
         std::shared_ptr<Individual> converted;
 
         if (ind->itype == rc->itype) {
             converted = ind->clone();
         } else if (rc->itype == IndividualType::Real) {
+            // Conversion preserves both the cached objective value and the
+            // individual's epidemic age, avoiding an unnecessary evaluation.
             auto rx = ind->real_x();
-            auto ni = std::make_shared<RealIndividual>(std::move(rx), rc->xmin, rc->xmax, ind->fvalue);
-            ni->epn = ind->epn;
+            auto ni = std::make_shared<RealIndividual>(std::move(rx), rc->x_min, rc->x_max, ind->f_value);
+            ni->n_ep = ind->n_ep;
             converted = ni;
         } else {
             auto rx = ind->real_x();
             std::vector<uint64_t> gc(dim);
             for (int d = 0; d < dim; ++d) {
-                double step = (rc->xmax[d] - rc->xmin[d]) / (double)((1ULL << rc->genes[d]) - 1);
-                int64_t v = (int64_t)std::round((rx[d] - rc->xmin[d]) / step);
+                double step = (rc->x_max[d] - rc->x_min[d]) / (double)((1ULL << rc->genes[d]) - 1);
+                int64_t v = (int64_t)std::round((rx[d] - rc->x_min[d]) / step);
                 uint64_t max_v = (1ULL << rc->genes[d]) - 1;
                 gc[d] = tc_to_gray_code((uint64_t)std::clamp(v, (int64_t)0, (int64_t)max_v));
             }
-            auto ni = std::make_shared<GrayIndividual>(gc, rc->xmin, rc->xmax, rc->genes, ind->fvalue);
-            ni->epn = ind->epn;
+            auto ni = std::make_shared<GrayIndividual>(gc, rc->x_min, rc->x_max, rc->genes, ind->f_value);
+            ni->n_ep = ind->n_ep;
             converted = ni;
         }
         rc->population.push_back(converted);
         rc->sort_population();
     }
 
-    void restart_stagnant_countries(double frac) {
+    void restart_stagnant_countries(double restart_fraction) {
         if (countries_.size() <= 1) return;
-        int num_restart = std::clamp((int)std::ceil(frac * (double)countries_.size()), 1, (int)countries_.size() - 1);
+        // countries_ is sorted best-to-worst before this helper is called; the
+        // leading country is therefore always protected from restart.
+        int restart_count = std::clamp(
+            (int)std::ceil(restart_fraction * (double)countries_.size()),
+            1, (int)countries_.size() - 1);
 
-        size_t start_idx = countries_.size() - num_restart;
-        for (size_t i = start_idx; i < countries_.size(); ++i) {
+        size_t start_index = countries_.size() - restart_count;
+        for (size_t i = start_index; i < countries_.size(); ++i) {
             auto& c = countries_[i];
             int target_n = std::max(c->size(), p_.N);
             c->population.clear();
@@ -1268,32 +1369,37 @@ private:
     void split_single_country() {
         if (countries_.size() != 1) return;
 
+        // Pair-based actions cannot operate with one country. Redistribute its
+        // residents among smaller countries and refill short groups randomly.
         auto& original = countries_[0];
         auto all_individuals = std::move(original->population);
         countries_.clear();
 
-        int total_inds = (int)all_individuals.size();
+        int total_individuals = (int)all_individuals.size();
         int target_size = std::max(2, p_.N / 2);
-        int num_new_countries = std::max(2, (total_inds + target_size - 1) / target_size);
+        int new_country_count = std::max(
+            2, (total_individuals + target_size - 1) / target_size);
 
         std::shuffle(all_individuals.begin(), all_individuals.end(), rng_engine);
 
-        int num_gray = (int)std::round(p_.gray_percent * (double)num_new_countries);
-        num_gray = std::clamp(num_gray, 0, num_new_countries);
+        int gray_country_count = (int)std::round(
+            p_.gray_percent * (double)new_country_count);
+        gray_country_count = std::clamp(gray_country_count, 0, new_country_count);
 
-        int ind_offset = 0;
-        for (int c_idx = 0; c_idx < num_new_countries; ++c_idx) {
-            IndividualType it = (c_idx < num_gray) ? IndividualType::Gray : IndividualType::Real;
+        int individual_offset = 0;
+        for (int country_index = 0; country_index < new_country_count; ++country_index) {
+            IndividualType type = (country_index < gray_country_count)
+                ? IndividualType::Gray : IndividualType::Real;
             auto new_c = std::make_unique<Country>(
-                target_size, p_.xmin, p_.xmax, f_, it, p_.genes
+                target_size, p_.x_min, p_.x_max, f_, type, p_.genes
             );
             new_c->population.clear();
 
-            int take = std::min(target_size, total_inds - ind_offset);
+            int take = std::min(target_size, total_individuals - individual_offset);
             for (int i = 0; i < take; ++i) {
-                new_c->population.push_back(all_individuals[ind_offset + i]);
+                new_c->population.push_back(all_individuals[individual_offset + i]);
             }
-            ind_offset += take;
+            individual_offset += take;
 
             while (new_c->size() < target_size) {
                 new_c->population.push_back(new_c->make_random_individual());
@@ -1304,7 +1410,7 @@ private:
             countries_.push_back(std::move(new_c));
         }
 
-        for (int i = ind_offset; i < total_inds; ++i) {
+        for (int i = individual_offset; i < total_individuals; ++i) {
             add_individual_to_random_country(all_individuals[i]);
         }
     }
