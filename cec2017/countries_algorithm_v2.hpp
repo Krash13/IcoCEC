@@ -721,6 +721,24 @@ struct Country {
         return s / (double)population.size();
     }
 
+    int select_rank_biased_parent(int parent_count, double pressure, int exclude = -1) const {
+        if (parent_count <= 1) return 0;
+
+        pressure = std::max(0.0, pressure);
+        std::vector<double> weights(parent_count, 0.0);
+        const double denom = static_cast<double>(std::max(1, parent_count - 1));
+
+        // population is sorted best-to-worst. Exponential rank weights are
+        // invariant to objective shifts/scales, unlike raw roulette fitness.
+        for (int rank = 0; rank < parent_count; ++rank) {
+            if (rank == exclude) continue;
+            weights[rank] = std::exp(-pressure * static_cast<double>(rank) / denom);
+        }
+
+        std::discrete_distribution<int> dist(weights.begin(), weights.end());
+        return dist(rng_engine);
+    }
+
     void select_action(std::vector<Country*>& all_countries,
                        double p_motion, double p_trade, double p_war, double p_epidemic, double p_migration) {
         action = weighted_action_choice(p_motion, p_trade, p_war, p_epidemic, p_migration);
@@ -852,7 +870,8 @@ struct Country {
         double real_eigen_share,
         double gray_uniform_share,
         double gray_two_point_share,
-        double gray_eigen_share) {
+        double gray_eigen_share,
+        double parent_rank_pressure) {
 
         if (size() < 2) return;
 
@@ -885,11 +904,10 @@ struct Country {
             }
 
             for (int i = 0; i < n; ++i) {
-                const int k1 = rand_int(0, parent_count - 1);
-                int k2 = k1;
-                while (k2 == k1) {
-                    k2 = rand_int(0, parent_count - 1);
-                }
+                const int k1 = select_rank_biased_parent(
+                    parent_count, parent_rank_pressure);
+                const int k2 = select_rank_biased_parent(
+                    parent_count, parent_rank_pressure, k1);
 
                 auto a = std::static_pointer_cast<GrayIndividual>(population[k1]);
                 auto b = std::static_pointer_cast<GrayIndividual>(population[k2]);
@@ -927,11 +945,10 @@ struct Country {
             }
 
             for (int i = 0; i < 2 * n; ++i) {
-                const int k1 = rand_int(0, parent_count - 1);
-                int k2 = k1;
-                while (k2 == k1) {
-                    k2 = rand_int(0, parent_count - 1);
-                }
+                const int k1 = select_rank_biased_parent(
+                    parent_count, parent_rank_pressure);
+                const int k2 = select_rank_biased_parent(
+                    parent_count, parent_rank_pressure, k1);
 
                 auto a = std::static_pointer_cast<RealIndividual>(population[k1]);
                 auto b = std::static_pointer_cast<RealIndividual>(population[k2]);
@@ -1255,6 +1272,10 @@ public:
         int max_mutation = 3;
         int tmax = 1000;
         double gray_percent = 0.5;
+
+        // Exponential rank-selection pressure for crossover parents.
+        // 0 means uniform selection; values around 3 match L-SRTDE's donor bias.
+        double parent_rank_pressure = 3.0;
 
         // Crossover operator shares. Values are linearly interpolated from
         // start to end according to FEs / MaxFEs and normalized when selected.
@@ -1666,7 +1687,8 @@ public:
                     real_eigen_share,
                     gray_uniform_share,
                     gray_two_point_share,
-                    gray_eigen_share
+                    gray_eigen_share,
+                    p_.parent_rank_pressure
                 );
                 c->extinction(p_.m_min, p_.m_max, f_min, f_max);
             }

@@ -50,6 +50,7 @@ struct IcoSettings {
     int stagnation_limit     = 17;
     double restart_country_frac = 0.236802;
     double migration_frac       = 0.212646;
+    double parent_rank_pressure = 3.0;
     double real_blx_share_start   = 0.50;
     double real_blx_share_end     = 0.25;
     double real_eigen_share_start = 0.50;
@@ -127,6 +128,7 @@ static Method::Params make_params(const IcoSettings& s, const Vec& x_min, const 
     p.stagnation_limit = s.stagnation_limit;
     p.restart_country_frac = s.restart_country_frac;
     p.migration_frac = s.migration_frac;
+    p.parent_rank_pressure = s.parent_rank_pressure;
     p.real_blx_share_start = s.real_blx_share_start;
     p.real_blx_share_end = s.real_blx_share_end;
     p.real_eigen_share_start = s.real_eigen_share_start;
@@ -282,6 +284,7 @@ s.p_trade      = 0.18145;
 s.p_war        = 0.174599;
 s.p_epidemic   = 0.177915;
 s.p_migration  = 0.14842;
+
 s.action_alpha         = 0.0551293;
 s.action_pmin          = 0.05;
 s.action_warmup_frac   = 0.12069;
