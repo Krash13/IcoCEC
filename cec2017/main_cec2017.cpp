@@ -117,7 +117,7 @@ Result run_one_cec(int funcid,
     // Истинный оптимум x* нам не известен (он скрыт в shift-данных),
     // поэтому canonical_x используется только для расчёта success
     // через сравнение значений функции (y_eps), не через L2-расстояние.
-    Vec canonical_x(dim, 0.0);
+    Vec canonical_x(dim, 0.0); //только для стандартных non-shifted функций
 
     auto counted = TestFunc(func);
     auto params = make_params(s, x_min, x_max, dim);
@@ -148,10 +148,10 @@ Result run_one_cec(int funcid,
         Vec canonical_x() const override { return can_x_; }
     };
 
-    // x_eps ставим заведомо большим (недостижимым), т.к. истинный минимум
+    // x_eps произвольный и не используем его, т.к. истинный минимум
     // неизвестен в координатах x; критерий успеха — по значению функции (y_eps).
     double x_eps = 1e-9;
-    double y_eps = 1e-4; // допуск по значению функции относительно оптимума funcid*100
+    double y_eps = 1e-8; // допуск по значению функции относительно оптимума funcid*100
     double true_optimum = cec2017::optimum_value(funcid); // funcid * 100
 
     LocalBench bm(method_factory, counted, name, x_min, x_max, canonical_x,
@@ -208,7 +208,7 @@ int main(int argc, char** argv) {
     for (const auto& entry : cec2017::all_functions()) {
         // F2 исторически исключена из официального сравнения CEC2017
         // (несогласованность реализаций между платформами) — раскомментируйте,
-        // если хотите включить её в тестирование.
+        // если хотите исключить ее
         // if (entry.id == 2) continue;
 
         // Для D=2 функции hf01-hf06 (11..16 в некоторых нумерациях) и cf07-cf08
