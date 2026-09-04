@@ -508,6 +508,48 @@ struct RealIndividual : Individual {
         f_value = func(x);
     }
 
+    static std::shared_ptr<RealIndividual> differential_crossover(
+        const RealIndividual& target,
+        const RealIndividual& pbest,
+        const RealIndividual& r1,
+        const RealIndividual& r2,
+        double F,
+        double CR,
+        const std::vector<double>& x_min,
+        const std::vector<double>& x_max,
+        const FuncT& func,
+        double* actual_cr = nullptr) {
+
+        const int dim = static_cast<int>(target.x.size());
+        std::vector<double> child_x = target.x;
+        const int forced_dim = rand_int(0, dim - 1);
+        int crossed = 0;
+
+        for (int d = 0; d < dim; ++d) {
+            if (rand_uniform(0.0, 1.0) < CR || d == forced_dim) {
+                double value =
+                    target.x[d] +
+                    F * (pbest.x[d] - target.x[d]) +
+                    F * (r1.x[d] - r2.x[d]);
+
+                // Match the competition DE implementations: an infeasible
+                // donor component is resampled inside the legal interval.
+                if (value < x_min[d] || value > x_max[d]) {
+                    value = rand_uniform(x_min[d], x_max[d]);
+                }
+                child_x[d] = value;
+                crossed++;
+            }
+        }
+
+        if (actual_cr != nullptr) {
+            *actual_cr = static_cast<double>(crossed) / std::max(1, dim);
+        }
+
+        return std::make_shared<RealIndividual>(
+            std::move(child_x), x_min, x_max, func);
+    }
+
     void mutation(const FuncT& func, double p_max) {
         n_ep += 1;
         int dim = (int)x.size();
@@ -868,6 +910,10 @@ struct Country {
         const Eigen::MatrixXd* eigen_basis,
         double real_blx_share,
         double real_eigen_share,
+        double real_de_share,
+        double de_f,
+        double de_cr,
+        double de_pbest_frac,
         double gray_uniform_share,
         double gray_two_point_share,
         double gray_eigen_share,
@@ -936,15 +982,62 @@ struct Country {
 
             real_blx_share = std::max(0.0, real_blx_share);
             real_eigen_share = std::max(0.0, real_eigen_share);
-            double crossover_share_sum = real_blx_share + real_eigen_share;
+            real_de_share = std::max(0.0, real_de_share);
+            double crossover_share_sum = real_blx_share + real_eigen_share + real_de_share;
 
             if (crossover_share_sum <= 0.0) {
-                real_blx_share = 0.50;
-                real_eigen_share = 0.50;
+                real_blx_share = 0.35;
+                real_eigen_share = 0.35;
+                real_de_share = 0.30;
                 crossover_share_sum = 1.0;
             }
 
+            de_f = std::clamp(de_f, 0.0, 1.0);
+            de_cr = std::clamp(de_cr, 0.0, 1.0);
+            de_pbest_frac = std::clamp(de_pbest_frac, 0.0, 1.0);
+
             for (int i = 0; i < 2 * n; ++i) {
+                const double crossover_choice = rand_uniform(0.0, crossover_share_sum);
+
+                if (crossover_choice >= real_blx_share + real_eigen_share && parent_count >= 4) {
+                    // L-SRTDE/RDEx-style current-to-pbest/1. The target and
+                    // second differential donor remain uniform, while r1 is
+                    // rank-biased and pbest comes from the elite prefix.
+                    const int target_idx = rand_int(0, parent_count - 1);
+                    const int pbest_count = std::clamp(
+                        static_cast<int>(std::ceil(de_pbest_frac * parent_count)),
+                        2, parent_count);
+
+                    int pbest_idx = rand_int(0, pbest_count - 1);
+                    while (pbest_idx == target_idx) {
+                        pbest_idx = rand_int(0, pbest_count - 1);
+                    }
+
+                    int r1_idx = select_rank_biased_parent(
+                        parent_count, parent_rank_pressure, target_idx);
+                    while (r1_idx == pbest_idx) {
+                        r1_idx = select_rank_biased_parent(
+                            parent_count, parent_rank_pressure, target_idx);
+                    }
+
+                    int r2_idx = rand_int(0, parent_count - 1);
+                    while (r2_idx == target_idx || r2_idx == pbest_idx || r2_idx == r1_idx) {
+                        r2_idx = rand_int(0, parent_count - 1);
+                    }
+
+                    auto target = std::static_pointer_cast<RealIndividual>(population[target_idx]);
+                    auto pbest = std::static_pointer_cast<RealIndividual>(population[pbest_idx]);
+                    auto r1 = std::static_pointer_cast<RealIndividual>(population[r1_idx]);
+                    auto r2 = std::static_pointer_cast<RealIndividual>(population[r2_idx]);
+
+                    population.push_back(
+                        RealIndividual::differential_crossover(
+                            *target, *pbest, *r1, *r2,
+                            de_f, de_cr, x_min, x_max, f)
+                    );
+                    continue;
+                }
+
                 const int k1 = select_rank_biased_parent(
                     parent_count, parent_rank_pressure);
                 const int k2 = select_rank_biased_parent(
@@ -953,7 +1046,6 @@ struct Country {
                 auto a = std::static_pointer_cast<RealIndividual>(population[k1]);
                 auto b = std::static_pointer_cast<RealIndividual>(population[k2]);
 
-                const double crossover_choice = rand_uniform(0.0, crossover_share_sum);
                 if (crossover_choice < real_blx_share) {
                     population.push_back(
                         RealIndividual::crossover(*a, *b, p, x_min, x_max, f)
@@ -1279,10 +1371,17 @@ public:
 
         // Crossover operator shares. Values are linearly interpolated from
         // start to end according to FEs / MaxFEs and normalized when selected.
-        double real_blx_share_start   = 0.50;
-        double real_blx_share_end     = 0.25;
-        double real_eigen_share_start = 0.50;
-        double real_eigen_share_end   = 0.75;
+        double real_blx_share_start   = 0.35;
+        double real_blx_share_end     = 0.15;
+        double real_eigen_share_start = 0.35;
+        double real_eigen_share_end   = 0.15;
+        double real_de_share_start    = 0.30;
+        double real_de_share_end      = 0.70;
+
+        // Fixed DE controls used before success-history adaptation is enabled.
+        double de_f = 0.55;
+        double de_cr = 0.90;
+        double de_pbest_frac = 0.20;
 
         double gray_uniform_share_start   = 0.05;
         double gray_uniform_share_end     = 0.05;
@@ -1386,18 +1485,21 @@ public:
         // Crossover shares are probabilities. Normalize start/end separately so
         // each group sums to 1; then linear interpolation preserves sum == 1
         // for every FEs / MaxFEs value.
-        auto normalize_real_shares = [](double& blx, double& eigen,
-                                        double fallback_blx, double fallback_eigen) {
+        auto normalize_real_shares = [](double& blx, double& eigen, double& de,
+                                        double fallback_blx, double fallback_eigen, double fallback_de) {
             blx = std::max(0.0, blx);
             eigen = std::max(0.0, eigen);
-            const double sum = blx + eigen;
+            de = std::max(0.0, de);
+            const double sum = blx + eigen + de;
             if (sum <= 1e-15) {
                 blx = fallback_blx;
                 eigen = fallback_eigen;
+                de = fallback_de;
                 return;
             }
             blx /= sum;
             eigen /= sum;
+            de /= sum;
         };
 
         auto normalize_gray_shares = [](double& uniform, double& two_point, double& eigen) {
@@ -1416,8 +1518,12 @@ public:
             eigen /= sum;
         };
 
-        normalize_real_shares(p_.real_blx_share_start, p_.real_eigen_share_start, 0.50, 0.50);
-        normalize_real_shares(p_.real_blx_share_end,   p_.real_eigen_share_end,   0.25, 0.75);
+        normalize_real_shares(
+            p_.real_blx_share_start, p_.real_eigen_share_start, p_.real_de_share_start,
+            0.35, 0.35, 0.30);
+        normalize_real_shares(
+            p_.real_blx_share_end, p_.real_eigen_share_end, p_.real_de_share_end,
+            0.15, 0.15, 0.70);
         normalize_gray_shares(p_.gray_uniform_share_start, p_.gray_two_point_share_start, p_.gray_eigen_share_start);
         normalize_gray_shares(p_.gray_uniform_share_end,   p_.gray_two_point_share_end,   p_.gray_eigen_share_end);
 
@@ -1603,6 +1709,8 @@ public:
                 p_.real_blx_share_start, p_.real_blx_share_end);
             const double real_eigen_share = interpolate_share(
                 p_.real_eigen_share_start, p_.real_eigen_share_end);
+            const double real_de_share = interpolate_share(
+                p_.real_de_share_start, p_.real_de_share_end);
             const double gray_uniform_share = interpolate_share(
                 p_.gray_uniform_share_start, p_.gray_uniform_share_end);
             const double gray_two_point_share = interpolate_share(
@@ -1685,6 +1793,10 @@ public:
                     eigen_basis_ptr,
                     real_blx_share,
                     real_eigen_share,
+                    real_de_share,
+                    p_.de_f,
+                    p_.de_cr,
+                    p_.de_pbest_frac,
                     gray_uniform_share,
                     gray_two_point_share,
                     gray_eigen_share,
