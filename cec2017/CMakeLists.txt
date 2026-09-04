@@ -15,12 +15,24 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
+add_compile_definitions(_USE_MATH_DEFINES)
+
 add_executable(ico_cec2017
         main_cec2017.cpp
         cec17_test_func.c
 )
 
+add_executable(meta_optimization
+        meta_optimization_v3.cpp
+        cec17_test_func.c
+)
+
 target_link_libraries(ico_cec2017 PRIVATE
+        Eigen3::Eigen
+        m
+)
+
+target_link_libraries(meta_optimization PRIVATE
         Eigen3::Eigen
         m
 )
