@@ -39,10 +39,10 @@ struct IcoSettings {
     int    max_mutation = 10;
     int    tmax         = 1200;
     double gray_percent = 0.15;
-    double p_war      = 0.22;
+    double p_war      = 0.02;
     double p_trade    = 0.45;
     double p_motion   = 0.3;
-    double p_epidemic = 0.07;
+    double p_epidemic = 0.27;
     double p_migration = 0.1;
     double action_alpha         = 0.321974;
     double action_pmin          = 0.05;
@@ -50,6 +50,17 @@ struct IcoSettings {
     int stagnation_limit     = 17;
     double restart_country_frac = 0.236802;
     double migration_frac       = 0.212646;
+    double real_blx_share_start   = 0.50;
+    double real_blx_share_end     = 0.25;
+    double real_eigen_share_start = 0.50;
+    double real_eigen_share_end   = 0.75;
+    double gray_uniform_share_start   = 0.05;
+    double gray_uniform_share_end     = 0.05;
+    double gray_two_point_share_start = 0.05;
+    double gray_two_point_share_end   = 0.05;
+    double gray_eigen_share_start     = 0.90;
+    double gray_eigen_share_end       = 0.90;
+    double eigen_ps = 0.50;
     bool   printing     = false;
     std::vector<int> genes;
 };
@@ -109,6 +120,17 @@ static Method::Params make_params(const IcoSettings& s, const Vec& x_min, const 
     p.stagnation_limit = s.stagnation_limit;
     p.restart_country_frac = s.restart_country_frac;
     p.migration_frac = s.migration_frac;
+    p.real_blx_share_start = s.real_blx_share_start;
+    p.real_blx_share_end = s.real_blx_share_end;
+    p.real_eigen_share_start = s.real_eigen_share_start;
+    p.real_eigen_share_end = s.real_eigen_share_end;
+    p.gray_uniform_share_start = s.gray_uniform_share_start;
+    p.gray_uniform_share_end = s.gray_uniform_share_end;
+    p.gray_two_point_share_start = s.gray_two_point_share_start;
+    p.gray_two_point_share_end = s.gray_two_point_share_end;
+    p.gray_eigen_share_start = s.gray_eigen_share_start;
+    p.gray_eigen_share_end = s.gray_eigen_share_end;
+    p.eigen_ps = s.eigen_ps;
     p.genes        = std::vector<int>(dim, 32);
     return p;
 }

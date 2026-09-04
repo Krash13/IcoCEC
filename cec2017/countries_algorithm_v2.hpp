@@ -397,18 +397,25 @@ struct GrayIndividual : Individual {
             z2[j] = zb[j] + alpha * (za[j] - zb[j]);
         }
 
-        // Binomial Eigen crossover is kept here for A/B experiments.
-        // const double cr = 0.80;
-        // const int j_rand_1 = rand_int(0, dim - 1);
-        // const int j_rand_2 = rand_int(0, dim - 1);
-        // for (int j = 0; j < dim; ++j) {
-        //     if (j == j_rand_1 || rand_uniform(0.0, 1.0) <= cr) {
-        //         z1[j] = zb[j];
+        // Previous binomial Eigen crossover is kept commented for A/B experiments.
+        // Helper:
+        // auto binomial_eigen_crossover = [&](Eigen::VectorXd& child_z,
+        //                                      const Eigen::VectorXd& other_z,
+        //                                      double cr) {
+        //     const int j_rand = rand_int(0, dim - 1);
+        //     for (int j = 0; j < dim; ++j) {
+        //         if (j == j_rand || rand_uniform(0.0, 1.0) <= cr) {
+        //             child_z[j] = other_z[j];
+        //         }
         //     }
-        //     if (j == j_rand_2 || rand_uniform(0.0, 1.0) <= cr) {
-        //         z2[j] = za[j];
-        //     }
-        // }
+        // };
+        //
+        // Calls (instead of the arithmetic loop above):
+        // const double gray_eigen_cr = 0.80;
+        // z1 = za;
+        // z2 = zb;
+        // binomial_eigen_crossover(z1, zb, gray_eigen_cr);
+        // binomial_eigen_crossover(z2, za, gray_eigen_cr);
 
         Eigen::VectorXd child1;
         Eigen::VectorXd child2;
@@ -591,14 +598,23 @@ struct RealIndividual : Individual {
             child_z[j] = za[j] + alpha * (zb[j] - za[j]);
         }
 
-        // Binomial Eigen crossover is kept here for A/B experiments.
-        // const double cr = 0.80;
-        // const int j_rand = rand_int(0, dim - 1);
-        // for (int j = 0; j < dim; ++j) {
-        //     if (j == j_rand || rand_uniform(0.0, 1.0) <= cr) {
-        //         child_z[j] = zb[j];
+        // Previous binomial Eigen crossover is kept commented for A/B experiments.
+        // Helper:
+        // auto binomial_eigen_crossover = [&](Eigen::VectorXd& result_z,
+        //                                      const Eigen::VectorXd& other_z,
+        //                                      double cr) {
+        //     const int j_rand = rand_int(0, dim - 1);
+        //     for (int j = 0; j < dim; ++j) {
+        //         if (j == j_rand || rand_uniform(0.0, 1.0) <= cr) {
+        //             result_z[j] = other_z[j];
+        //         }
         //     }
-        // }
+        // };
+        //
+        // Call (instead of the arithmetic loop above):
+        // const double real_eigen_cr = 0.80;
+        // child_z = za;
+        // binomial_eigen_crossover(child_z, zb, real_eigen_cr);
 
         Eigen::VectorXd child = use_eigen ? (*eigen_basis) * child_z : child_z;
 
@@ -1253,6 +1269,15 @@ public:
         // Fraction of the best population used to estimate the Eigen basis.
         double eigen_ps = 0.50;
 
+        // Legacy Eigen parameters from the previous binomial implementation.
+        // They are intentionally kept commented out: gray_eigen_prob is replaced
+        // by gray_eigen_share_start/end, gray_eigen_cr is not used by arithmetic
+        // Eigen crossover, and gray_eigen_ps is replaced by the common eigen_ps
+        // used by both Gray and Real individuals.
+        // double gray_eigen_prob = 0.10;
+        // double gray_eigen_cr   = 0.80;
+        // double gray_eigen_ps   = 0.50;
+
         bool printing = true;
 
         // Probabilities of the five country actions. The order used throughout
@@ -1322,6 +1347,44 @@ public:
     }
 
     void init_internal(FuncT func) {
+        // Crossover shares are probabilities. Normalize start/end separately so
+        // each group sums to 1; then linear interpolation preserves sum == 1
+        // for every FEs / MaxFEs value.
+        auto normalize_real_shares = [](double& blx, double& eigen,
+                                        double fallback_blx, double fallback_eigen) {
+            blx = std::max(0.0, blx);
+            eigen = std::max(0.0, eigen);
+            const double sum = blx + eigen;
+            if (sum <= 1e-15) {
+                blx = fallback_blx;
+                eigen = fallback_eigen;
+                return;
+            }
+            blx /= sum;
+            eigen /= sum;
+        };
+
+        auto normalize_gray_shares = [](double& uniform, double& two_point, double& eigen) {
+            uniform = std::max(0.0, uniform);
+            two_point = std::max(0.0, two_point);
+            eigen = std::max(0.0, eigen);
+            const double sum = uniform + two_point + eigen;
+            if (sum <= 1e-15) {
+                uniform = 0.05;
+                two_point = 0.05;
+                eigen = 0.90;
+                return;
+            }
+            uniform /= sum;
+            two_point /= sum;
+            eigen /= sum;
+        };
+
+        normalize_real_shares(p_.real_blx_share_start, p_.real_eigen_share_start, 0.50, 0.50);
+        normalize_real_shares(p_.real_blx_share_end,   p_.real_eigen_share_end,   0.25, 0.75);
+        normalize_gray_shares(p_.gray_uniform_share_start, p_.gray_two_point_share_start, p_.gray_eigen_share_start);
+        normalize_gray_shares(p_.gray_uniform_share_end,   p_.gray_two_point_share_end,   p_.gray_eigen_share_end);
+
         double sum_p = p_.p_motion + p_.p_trade + p_.p_war + p_.p_epidemic + p_.p_migration;
         // Accept approximately normalized input and repair small/user-supplied
         // deviations so weighted selection always receives a valid total.

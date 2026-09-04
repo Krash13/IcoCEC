@@ -1,5 +1,5 @@
 // ============================================================================
-// meta_optimization_v4.cpp
+// meta_optimization_v2.cpp
 //
 // Мета-оптимизация параметров ICO (CountriesAlgorithm) с помощью GWO.
 //
@@ -39,7 +39,7 @@ using Vec = std::vector<double>;
 // ----------------------------------------------------------------------------
 
 constexpr std::uint32_t GWO_SEED       = 123456789u;
-constexpr int           META_DIM       = 24;    // 24 параметра ICO
+constexpr int           META_DIM       = 35;    // 35 параметров ICO
 constexpr int           ST_DIM         = 10;    // размерность тестовой задачи CEC2017
 constexpr long          ICO_MAX_CALLS  = 20000; // бюджет вызовов ЦФ на один прогон ICO
 constexpr int           REPEATS        = 3;     // прогонов ICO на каждый набор параметров
@@ -61,7 +61,7 @@ static const std::vector<BenchFunc> kBenchSet = {
 };
 
 // ----------------------------------------------------------------------------
-// Декодирование вектора GWO (x, размер META_DIM=24) в Params ICO
+// Декодирование вектора GWO (x, размер META_DIM=35) в Params ICO
 // ----------------------------------------------------------------------------
 static CountriesAlgorithm::Params decode_params(const Vec& x, int dim) {
     CountriesAlgorithm::Params p;
@@ -82,19 +82,12 @@ static CountriesAlgorithm::Params decode_params(const Vec& x, int dim) {
     p.max_mutation = std::max(1, static_cast<int>(std::round(x[12])));
     p.gray_percent = std::clamp(x[13], 0.0, 1.0);
 
-    // Доли операторов кроссовера меняются линейно по FEs / MaxFEs.
-    // Пока они не включены в META_DIM и задаются здесь явно.
-    p.real_blx_share_start   = 0.50;
-    p.real_blx_share_end     = 0.25;
-    p.real_eigen_share_start = 0.50;
-    p.real_eigen_share_end   = 0.75;
-    p.gray_uniform_share_start   = 0.05;
-    p.gray_uniform_share_end     = 0.05;
-    p.gray_two_point_share_start = 0.05;
-    p.gray_two_point_share_end   = 0.05;
-    p.gray_eigen_share_start     = 0.90;
-    p.gray_eigen_share_end       = 0.90;
-    p.eigen_ps = 0.50;
+    // Legacy parameters of the previous binomial Eigen crossover are no longer
+    // active. The arithmetic operator does not use CR; operator selection is
+    // controlled by *_share_start/end, and eigen_ps is shared by Gray and Real.
+    // p.gray_eigen_prob = 0.10;
+    // p.gray_eigen_cr   = 0.80;
+    // p.gray_eigen_ps   = 0.50;
 
     // Softmax по 5 логитам действий: motion, trade, war, epidemic, migration
     std::array<double, 5> logits = {x[14], x[15], x[16], x[17], x[18]};
@@ -129,6 +122,52 @@ static CountriesAlgorithm::Params decode_params(const Vec& x, int dim) {
     p.stagnation_limit     = std::max(5, static_cast<int>(std::round(x[21])));
     p.restart_country_frac = std::clamp(x[22], 0.05, 0.50);
     p.migration_frac       = std::clamp(x[23], 0.05, 0.60);
+
+    // Доли операторов кроссовера меняются линейно по FEs / MaxFEs.
+    p.real_blx_share_start   = std::clamp(x[24], 0.0, 1.0);
+    p.real_blx_share_end     = std::clamp(x[25], 0.0, 1.0);
+    p.real_eigen_share_start = std::clamp(x[26], 0.0, 1.0);
+    p.real_eigen_share_end   = std::clamp(x[27], 0.0, 1.0);
+    p.gray_uniform_share_start   = std::clamp(x[28], 0.0, 1.0);
+    p.gray_uniform_share_end     = std::clamp(x[29], 0.0, 1.0);
+    p.gray_two_point_share_start = std::clamp(x[30], 0.0, 1.0);
+    p.gray_two_point_share_end   = std::clamp(x[31], 0.0, 1.0);
+    p.gray_eigen_share_start     = std::clamp(x[32], 0.0, 1.0);
+    p.gray_eigen_share_end       = std::clamp(x[33], 0.0, 1.0);
+
+    // В каждой группе доли являются вероятностями и должны давать сумму 1.
+    // Если GWO попал ровно в нулевой вектор, используем исходные доли.
+    auto normalize_real_shares = [](double& blx, double& eigen,
+                                    double fallback_blx, double fallback_eigen) {
+        const double sum = blx + eigen;
+        if (sum <= 1e-15) {
+            blx = fallback_blx;
+            eigen = fallback_eigen;
+            return;
+        }
+        blx /= sum;
+        eigen /= sum;
+    };
+
+    auto normalize_gray_shares = [](double& uniform, double& two_point, double& eigen) {
+        const double sum = uniform + two_point + eigen;
+        if (sum <= 1e-15) {
+            uniform = 0.05;
+            two_point = 0.05;
+            eigen = 0.90;
+            return;
+        }
+        uniform /= sum;
+        two_point /= sum;
+        eigen /= sum;
+    };
+
+    normalize_real_shares(p.real_blx_share_start, p.real_eigen_share_start, 0.50, 0.50);
+    normalize_real_shares(p.real_blx_share_end,   p.real_eigen_share_end,   0.25, 0.75);
+    normalize_gray_shares(p.gray_uniform_share_start, p.gray_two_point_share_start, p.gray_eigen_share_start);
+    normalize_gray_shares(p.gray_uniform_share_end,   p.gray_two_point_share_end,   p.gray_eigen_share_end);
+
+    p.eigen_ps = std::clamp(x[34], 0.05, 1.0);
 
     p.x_min = Vec(dim, cec2017::kLowerBound);
     p.x_max = Vec(dim, cec2017::kUpperBound);
@@ -213,7 +252,7 @@ int main() {
     for (const auto& bf : kBenchSet) std::cout << "F" << bf.id << " ";
     std::cout << "\n\n";
 
-    // 1. Задаем нижние границы поиска Xmin (24 параметра)
+    // 1. Задаем нижние границы поиска Xmin (35 параметров)
     Vec Xmin = {
         0.000001, // 0:  p_min_raw
         1.0,      // 1:  p_max_raw
@@ -238,7 +277,18 @@ int main() {
         0.0,      // 20: action_warmup_frac
         10.0,     // 21: stagnation_limit
         0.05,     // 22: restart_country_frac
-        0.10      // 23: migration_frac
+        0.10,     // 23: migration_frac
+        0.0,      // 24: real_blx_share_start
+        0.0,      // 25: real_blx_share_end
+        0.0,      // 26: real_eigen_share_start
+        0.0,      // 27: real_eigen_share_end
+        0.0,      // 28: gray_uniform_share_start
+        0.0,      // 29: gray_uniform_share_end
+        0.0,      // 30: gray_two_point_share_start
+        0.0,      // 31: gray_two_point_share_end
+        0.0,      // 32: gray_eigen_share_start
+        0.0,      // 33: gray_eigen_share_end
+        0.05      // 34: eigen_ps
     };
 
     // 2. Дельты (размах диапазона поиска) для каждого параметра
@@ -266,7 +316,18 @@ int main() {
         0.30,     // 20: action_warmup_frac -> Xmin[20] + 0.30 = 0.30
         40.0,     // 21: stagnation_limit -> Xmin[21] + 40.0 = 50.0
         0.35,     // 22: restart_country_frac -> Xmin[22] + 0.35 = 0.40
-        0.40      // 23: migration_frac -> Xmin[23] + 0.40 = 0.50
+        0.40,     // 23: migration_frac -> Xmin[23] + 0.40 = 0.50
+        1.0,      // 24: real_blx_share_start -> [0.0, 1.0]
+        1.0,      // 25: real_blx_share_end -> [0.0, 1.0]
+        1.0,      // 26: real_eigen_share_start -> [0.0, 1.0]
+        1.0,      // 27: real_eigen_share_end -> [0.0, 1.0]
+        1.0,      // 28: gray_uniform_share_start -> [0.0, 1.0]
+        1.0,      // 29: gray_uniform_share_end -> [0.0, 1.0]
+        1.0,      // 30: gray_two_point_share_start -> [0.0, 1.0]
+        1.0,      // 31: gray_two_point_share_end -> [0.0, 1.0]
+        1.0,      // 32: gray_eigen_share_start -> [0.0, 1.0]
+        1.0,      // 33: gray_eigen_share_end -> [0.0, 1.0]
+        0.95      // 34: eigen_ps -> [0.05, 1.0]
     };
 
     // 3. Вычисление верхних границ Xmax относительно Xmin через оператор +
@@ -324,6 +385,9 @@ int main() {
     std::cout << "s.gray_eigen_share_start     = " << final_params.gray_eigen_share_start     << ";\n";
     std::cout << "s.gray_eigen_share_end       = " << final_params.gray_eigen_share_end       << ";\n";
     std::cout << "s.eigen_ps                   = " << final_params.eigen_ps                   << ";\n";
+    // std::cout << "s.gray_eigen_prob = " << final_params.gray_eigen_prob << ";\n";
+    // std::cout << "s.gray_eigen_cr   = " << final_params.gray_eigen_cr   << ";\n";
+    // std::cout << "s.gray_eigen_ps   = " << final_params.gray_eigen_ps   << ";\n";
     std::cout << "s.p_motion     = " << final_params.p_motion       << ";\n";
     std::cout << "s.p_trade      = " << final_params.p_trade        << ";\n";
     std::cout << "s.p_war        = " << final_params.p_war          << ";\n";
