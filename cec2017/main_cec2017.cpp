@@ -277,11 +277,20 @@ s.l            = 4;
 s.ep_elite     = 0.192889;
 s.ep_dead      = 0.204716;
 s.max_mutation = 10;
+s.gray_percent = 0.35;
+/*
 s.gray_percent = 0.773545;
-s.real_blx_share_start   = 0.868416;
-s.real_blx_share_end     = 0.941535;
-s.real_eigen_share_start = 0.131584;
-s.real_eigen_share_end   = 0.0584651;
+//s.real_blx_share_start   = 0.868416;
+//s.real_blx_share_end     = 0.941535;
+//s.real_eigen_share_start = 0.131584;
+//s.real_eigen_share_end   = 0.0584651;
+s.real_blx_share_start   = 0.35;
+s.real_blx_share_end     = 0.15;
+    s.real_eigen_share_start = 0.35;
+    s.real_eigen_share_end   = 0.15;
+    s.real_de_share_start    = 0.30;
+    s.real_de_share_end      = 0.70;
+
 s.gray_uniform_share_start   = 0.461211;
 s.gray_uniform_share_end     = 0.0796675;
 s.gray_two_point_share_start = 0.0921363;
@@ -289,6 +298,7 @@ s.gray_two_point_share_end   = 0.689922;
 s.gray_eigen_share_start     = 0.446653;
 s.gray_eigen_share_end       = 0.230411;
 s.eigen_ps                   = 0.0750305;
+*/
 s.p_motion     = 0.317617;
 s.p_trade      = 0.18145;
 s.p_war        = 0.174599;
@@ -301,7 +311,6 @@ s.action_warmup_frac   = 0.12069;
 s.stagnation_limit     = 24;
 s.restart_country_frac = 0.146922;
 s.migration_frac       = 0.32868;
-
 
     s.genes = std::vector<int>(dim, 32);
 
