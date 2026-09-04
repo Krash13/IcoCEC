@@ -54,6 +54,10 @@ static inline double rand_uniform(double lo, double hi) {
     return std::uniform_real_distribution<double>{lo, hi}(rng_engine);
 }
 
+static inline double rand_normal(double mean = 0.0, double stddev = 1.0) {
+    return std::normal_distribution<double>{mean, stddev}(rng_engine);
+}
+
 static inline int rand_int(int lo, int hi_inclusive) {
     return std::uniform_int_distribution<int>{lo, hi_inclusive}(rng_engine);
 }
@@ -1269,6 +1273,17 @@ public:
         // Fraction of the best population used to estimate the Eigen basis.
         double eigen_ps = 0.50;
 
+        // Late Eigen-guided local search around the current global best.
+        // Sigma is expressed in normalized [0,1] coordinates and decreases
+        // geometrically after eigen_local_search_start_frac of the FE budget.
+        bool   eigen_local_search            = true;
+        double eigen_local_search_start_frac = 0.50;
+        double eigen_local_sigma_start       = 0.02;
+        double eigen_local_sigma_end         = 1e-8;
+        double eigen_min_axis_scale          = 1e-3;
+        int    eigen_local_trials            = 2;
+        bool   eigen_local_stats             = true;
+
         // Legacy Eigen parameters from the previous binomial implementation.
         // They are intentionally kept commented out: gray_eigen_prob is replaced
         // by gray_eigen_share_start/end, gray_eigen_cr is not used by arithmetic
@@ -1446,6 +1461,8 @@ public:
         double best_f = std::numeric_limits<double>::infinity();
         long iteration = 0;
 
+        reset_eigen_local_stats();
+
         if (!countries_.empty() && !countries_[0]->population.empty()) {
             best_x = countries_[0]->population[0]->real_x();
             best_f = countries_[0]->population[0]->f_value;
@@ -1465,6 +1482,7 @@ public:
 
             if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
                 if (p_.printing) std::cout << "Max calls reached: " << *calls_count_ << std::endl;
+                print_eigen_local_stats();
                 return {best_x, best_f, iteration};
             }
 
@@ -1572,13 +1590,60 @@ public:
                 p_.gray_eigen_share_start, p_.gray_eigen_share_end);
 
             Eigen::MatrixXd eigen_basis;
+            Eigen::VectorXd eigen_values;
             const Eigen::MatrixXd* eigen_basis_ptr = nullptr;
+
+            // Early in the run the covariance is estimated from the combined
+            // elite population. Late in the run it is estimated from the best
+            // country so the basis describes the local valley rather than the
+            // distance between different country clusters.
+            const bool use_best_country_covariance =
+                crossover_progress >= p_.eigen_local_search_start_frac;
 
             // The same covariance basis is used by Gray and real individuals.
             if (p_.x_min.size() > 1 &&
-                (real_eigen_share > 0.0 || gray_eigen_share > 0.0)) {
-                eigen_basis = build_gray_eigen_basis(p_.eigen_ps);
+                (real_eigen_share > 0.0 ||
+                 gray_eigen_share > 0.0 ||
+                 p_.eigen_local_search)) {
+                eigen_basis = build_gray_eigen_basis(
+                    p_.eigen_ps,
+                    &eigen_values,
+                    use_best_country_covariance
+                );
                 eigen_basis_ptr = &eigen_basis;
+            }
+
+            // Crossover can only recombine the spread already present between
+            // parents. This late local search can make arbitrarily small steps
+            // around the global best along covariance eigen-directions.
+            if (p_.eigen_local_search &&
+                eigen_basis_ptr != nullptr &&
+                crossover_progress >= p_.eigen_local_search_start_frac &&
+                (!max_calls.has_value() || *calls_count_ < max_calls.value())) {
+
+                const double local_den = std::max(
+                    1e-15,
+                    1.0 - p_.eigen_local_search_start_frac
+                );
+                const double local_progress = std::clamp(
+                    (crossover_progress - p_.eigen_local_search_start_frac) / local_den,
+                    0.0,
+                    1.0
+                );
+
+                const double sigma_start = std::max(1e-15, p_.eigen_local_sigma_start);
+                const double sigma_end = std::max(1e-15, p_.eigen_local_sigma_end);
+                const double global_sigma =
+                    sigma_start * std::pow(sigma_end / sigma_start, local_progress);
+
+                eigen_guided_local_search(
+                    *eigen_basis_ptr,
+                    eigen_values,
+                    global_sigma,
+                    p_.eigen_min_axis_scale,
+                    p_.eigen_local_trials,
+                    max_calls
+                );
             }
 
             std::vector<std::shared_ptr<Individual>> e_individuals;
@@ -1663,6 +1728,7 @@ public:
             // }
         }
 
+        print_eigen_local_stats();
         return {best_x, best_f, iteration};
     }
 
@@ -1672,36 +1738,122 @@ private:
     std::shared_ptr<long> calls_count_;
     std::vector<std::unique_ptr<Country>> countries_;
     ActionAdaptation action_adapt_;
+    size_t eigen_local_axis_cursor_ = 0;
+    long eigen_local_calls_ = 0;
+    long eigen_local_evaluations_ = 0;
+    long eigen_local_axes_tested_ = 0;
+    long eigen_local_accepted_ = 0;
+    long eigen_local_plus_accepted_ = 0;
+    long eigen_local_minus_accepted_ = 0;
+    double eigen_local_best_before_ = std::numeric_limits<double>::infinity();
+    double eigen_local_best_after_ = std::numeric_limits<double>::infinity();
+    double eigen_local_total_improvement_ = 0.0;
+    double eigen_local_max_improvement_ = 0.0;
+
+    void reset_eigen_local_stats() {
+        eigen_local_axis_cursor_ = 0;
+        eigen_local_calls_ = 0;
+        eigen_local_evaluations_ = 0;
+        eigen_local_axes_tested_ = 0;
+        eigen_local_accepted_ = 0;
+        eigen_local_plus_accepted_ = 0;
+        eigen_local_minus_accepted_ = 0;
+        eigen_local_best_before_ = std::numeric_limits<double>::infinity();
+        eigen_local_best_after_ = std::numeric_limits<double>::infinity();
+        eigen_local_total_improvement_ = 0.0;
+        eigen_local_max_improvement_ = 0.0;
+    }
+
+    void print_eigen_local_stats() const {
+        if (!p_.eigen_local_stats) return;
+
+        const double acceptance_rate =
+            (eigen_local_axes_tested_ > 0)
+                ? 100.0 * static_cast<double>(eigen_local_accepted_) /
+                    static_cast<double>(eigen_local_axes_tested_)
+                : 0.0;
+
+        std::cout << "  Eigen local stats: {"
+                  << "calls=" << eigen_local_calls_
+                  << ", evaluations=" << eigen_local_evaluations_
+                  << ", axes_tested=" << eigen_local_axes_tested_
+                  << ", accepted=" << eigen_local_accepted_
+                  << ", acceptance_percent=" << acceptance_rate
+                  << ", plus_accepted=" << eigen_local_plus_accepted_
+                  << ", minus_accepted=" << eigen_local_minus_accepted_
+                  << ", best_before=" << eigen_local_best_before_
+                  << ", best_after=" << eigen_local_best_after_
+                  << ", total_improvement=" << eigen_local_total_improvement_
+                  << ", max_improvement=" << eigen_local_max_improvement_
+                  << "}" << std::endl;
+    }
 
     // Build one basis from the combined population rather than from a single
     // country. With N=20, a per-country covariance matrix would be strongly
     // rank-deficient for D=30, 50, or 100. The same basis is used by Gray and
     // real Eigen crossover.
-    Eigen::MatrixXd build_gray_eigen_basis(double ps) const {
+    Eigen::MatrixXd build_gray_eigen_basis(
+        double ps,
+        Eigen::VectorXd* eigen_values = nullptr,
+        bool best_country_only = false) const {
         const int dim = static_cast<int>(p_.x_min.size());
         Eigen::MatrixXd identity = Eigen::MatrixXd::Identity(dim, dim);
 
+        auto set_identity_values = [&]() {
+            if (eigen_values != nullptr) {
+                *eigen_values = Eigen::VectorXd::Ones(dim);
+            }
+        };
+
         if (dim <= 1) {
+            set_identity_values();
             return identity;
         }
 
         std::vector<const Individual*> pool;
 
-        size_t total_size = 0;
-        for (const auto& country : countries_) {
-            total_size += country->population.size();
-        }
-        pool.reserve(total_size);
+        // During late refinement use one coherent local cloud. If the best
+        // country does not contain enough samples for a D-dimensional
+        // covariance estimate, fall back to the combined population.
+        if (best_country_only && !countries_.empty()) {
+            const auto best_it = std::min_element(
+                countries_.begin(),
+                countries_.end(),
+                [](const auto& lhs, const auto& rhs) {
+                    return lhs->best_f() < rhs->best_f();
+                }
+            );
 
-        for (const auto& country : countries_) {
-            for (const auto& individual : country->population) {
-                if (std::isfinite(individual->f_value)) {
-                    pool.push_back(individual.get());
+            if (best_it != countries_.end() &&
+                (*best_it)->population.size() >= static_cast<size_t>(dim + 1)) {
+                pool.reserve((*best_it)->population.size());
+                for (const auto& individual : (*best_it)->population) {
+                    if (std::isfinite(individual->f_value)) {
+                        pool.push_back(individual.get());
+                    }
+                }
+            }
+        }
+
+        if (pool.size() < static_cast<size_t>(dim + 1)) {
+            pool.clear();
+            size_t total_size = 0;
+            for (const auto& country : countries_) {
+                total_size += country->population.size();
+            }
+            pool.reserve(total_size);
+
+            for (const auto& country : countries_) {
+                for (const auto& individual : country->population) {
+                    if (std::isfinite(individual->f_value)) {
+                        pool.push_back(individual.get());
+                    }
                 }
             }
         }
 
         if (pool.size() < 2) {
+            set_identity_values();
             return identity;
         }
 
@@ -1754,12 +1906,14 @@ private:
             static_cast<double>(elite_count - 1);
 
         if (!covariance.allFinite()) {
+            set_identity_values();
             return identity;
         }
 
         // Stabilize the eigendecomposition for nearly collapsed populations.
         const double mean_variance = covariance.diagonal().cwiseAbs().mean();
         if (!std::isfinite(mean_variance)) {
+            set_identity_values();
             return identity;
         }
 
@@ -1772,11 +1926,181 @@ private:
         );
 
         if (solver.info() != Eigen::Success ||
-            !solver.eigenvectors().allFinite()) {
+            !solver.eigenvectors().allFinite() ||
+            !solver.eigenvalues().allFinite()) {
+            set_identity_values();
             return identity;
         }
 
+        if (eigen_values != nullptr) {
+            *eigen_values = solver.eigenvalues().cwiseMax(0.0);
+        }
+
         return solver.eigenvectors();
+    }
+
+    void eigen_guided_local_search(
+        const Eigen::MatrixXd& eigen_basis,
+        const Eigen::VectorXd& eigen_values,
+        double global_sigma,
+        double min_axis_scale,
+        int trials,
+        std::optional<long> max_calls) {
+
+        if (countries_.empty() || trials <= 0 || global_sigma <= 0.0) {
+            return;
+        }
+
+        const int dim = static_cast<int>(p_.x_min.size());
+        if (dim <= 0 ||
+            eigen_basis.rows() != dim ||
+            eigen_basis.cols() != dim ||
+            eigen_values.size() != dim ||
+            !eigen_basis.allFinite() ||
+            !eigen_values.allFinite()) {
+            return;
+        }
+
+        auto best_country_it = std::min_element(
+            countries_.begin(),
+            countries_.end(),
+            [](const auto& lhs, const auto& rhs) {
+                return lhs->best_f() < rhs->best_f();
+            }
+        );
+        if (best_country_it == countries_.end() || (*best_country_it)->empty()) {
+            return;
+        }
+
+        Country& best_country = **best_country_it;
+        Eigen::VectorXd best_normalized(dim);
+
+        eigen_local_calls_++;
+        if (!std::isfinite(eigen_local_best_before_)) {
+            eigen_local_best_before_ = best_country.population[0]->f_value;
+            eigen_local_best_after_ = eigen_local_best_before_;
+        }
+
+        auto update_best_normalized = [&]() {
+            const auto current_best_x = best_country.population[0]->real_x();
+            for (int d = 0; d < dim; ++d) {
+                const double range = p_.x_max[d] - p_.x_min[d];
+                best_normalized[d] =
+                    (range > 0.0) ?
+                    (current_best_x[d] - p_.x_min[d]) / range : 0.0;
+            }
+        };
+
+        update_best_normalized();
+
+        // Eigenvalues control only the relative step lengths. The absolute
+        // radius is controlled by global_sigma. A floor prevents a collapsed
+        // covariance axis from becoming permanently frozen.
+        const double max_eigen_value = eigen_values.maxCoeff();
+        min_axis_scale = std::clamp(min_axis_scale, 1e-12, 1.0);
+
+        Eigen::VectorXd axis_scale = Eigen::VectorXd::Ones(dim);
+        if (std::isfinite(max_eigen_value) && max_eigen_value > 1e-30) {
+            for (int j = 0; j < dim; ++j) {
+                const double relative_variance =
+                    std::max(0.0, eigen_values[j]) / max_eigen_value;
+                axis_scale[j] = std::max(
+                    std::sqrt(relative_variance),
+                    min_axis_scale
+                );
+            }
+        }
+
+        // A full-dimensional random Gaussian step is unlikely to improve a
+        // narrow ill-conditioned valley: one bad component along a sensitive
+        // axis can spoil the whole trial. Instead perform a small pattern
+        // search in the covariance eigenbasis. Each call examines a few axes
+        // in round-robin order and evaluates both + and - directions.
+        for (int trial = 0; trial < trials; ++trial) {
+            if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
+                break;
+            }
+
+            const int axis = static_cast<int>(eigen_local_axis_cursor_ % dim);
+            eigen_local_axis_cursor_++;
+            eigen_local_axes_tested_++;
+
+            const double axis_step = global_sigma * axis_scale[axis];
+            if (!(axis_step > 0.0) || !std::isfinite(axis_step)) {
+                continue;
+            }
+
+            std::shared_ptr<Individual> best_candidate;
+            int best_candidate_sign = 0;
+
+            for (int sign : {-1, 1}) {
+                if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
+                    break;
+                }
+
+                Eigen::VectorXd candidate_normalized =
+                    best_normalized +
+                    static_cast<double>(sign) * axis_step * eigen_basis.col(axis);
+
+                std::vector<double> candidate_x(dim);
+                for (int d = 0; d < dim; ++d) {
+                    const double range = p_.x_max[d] - p_.x_min[d];
+                    const double u = std::clamp(candidate_normalized[d], 0.0, 1.0);
+                    candidate_x[d] = p_.x_min[d] + u * range;
+                }
+
+                std::shared_ptr<Individual> candidate;
+                if (best_country.itype == IndividualType::Gray) {
+                    candidate = GrayIndividual::from_real(
+                        candidate_x,
+                        best_country.x_min,
+                        best_country.x_max,
+                        best_country.genes,
+                        best_country.f
+                    );
+                } else {
+                    candidate = std::make_shared<RealIndividual>(
+                        std::move(candidate_x),
+                        best_country.x_min,
+                        best_country.x_max,
+                        best_country.f
+                    );
+                }
+
+                eigen_local_evaluations_++;
+
+                if ((!best_candidate || candidate->f_value < best_candidate->f_value) &&
+                    candidate->f_value < best_country.population[0]->f_value) {
+                    best_candidate_sign = sign;
+                    best_candidate = std::move(candidate);
+                }
+            }
+
+            if (best_candidate) {
+                const double previous_best = best_country.population[0]->f_value;
+                const double improvement = previous_best - best_candidate->f_value;
+
+                eigen_local_accepted_++;
+                if (best_candidate_sign > 0) {
+                    eigen_local_plus_accepted_++;
+                } else if (best_candidate_sign < 0) {
+                    eigen_local_minus_accepted_++;
+                }
+                eigen_local_total_improvement_ += improvement;
+                eigen_local_max_improvement_ = std::max(
+                    eigen_local_max_improvement_, improvement
+                );
+
+                best_country.population.push_back(std::move(best_candidate));
+                best_country.sort_population();
+                best_country.truncate(2 * p_.N);
+                eigen_local_best_after_ = best_country.population[0]->f_value;
+
+                // Continue subsequent axis probes from the newly accepted best.
+                // Re-reading real_x() also accounts for Gray quantization.
+                update_best_normalized();
+            }
+        }
     }
 
     void remove_empty() {

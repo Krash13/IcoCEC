@@ -39,10 +39,10 @@ struct IcoSettings {
     int    max_mutation = 10;
     int    tmax         = 1200;
     double gray_percent = 0.15;
-    double p_war      = 0.02;
+    double p_war      = 0.22;
     double p_trade    = 0.45;
     double p_motion   = 0.3;
-    double p_epidemic = 0.27;
+    double p_epidemic = 0.07;
     double p_migration = 0.1;
     double action_alpha         = 0.321974;
     double action_pmin          = 0.05;
@@ -61,6 +61,13 @@ struct IcoSettings {
     double gray_eigen_share_start     = 0.90;
     double gray_eigen_share_end       = 0.90;
     double eigen_ps = 0.50;
+    bool   eigen_local_search            = true;
+    double eigen_local_search_start_frac = 0.50;
+    double eigen_local_sigma_start       = 0.02;
+    double eigen_local_sigma_end         = 1e-8;
+    double eigen_min_axis_scale          = 1e-3;
+    int    eigen_local_trials            = 2;
+    bool   eigen_local_stats             = true;
     bool   printing     = false;
     std::vector<int> genes;
 };
@@ -131,6 +138,13 @@ static Method::Params make_params(const IcoSettings& s, const Vec& x_min, const 
     p.gray_eigen_share_start = s.gray_eigen_share_start;
     p.gray_eigen_share_end = s.gray_eigen_share_end;
     p.eigen_ps = s.eigen_ps;
+    p.eigen_local_search = s.eigen_local_search;
+    p.eigen_local_search_start_frac = s.eigen_local_search_start_frac;
+    p.eigen_local_sigma_start = s.eigen_local_sigma_start;
+    p.eigen_local_sigma_end = s.eigen_local_sigma_end;
+    p.eigen_min_axis_scale = s.eigen_min_axis_scale;
+    p.eigen_local_trials = s.eigen_local_trials;
+    p.eigen_local_stats = s.eigen_local_stats;
     p.genes        = std::vector<int>(dim, 32);
     return p;
 }
@@ -236,6 +250,46 @@ int main(int argc, char** argv) {
     std::optional<long> max_calls = 10000L * dim;
 
     IcoSettings s;
+
+
+s.p_min        = 6.81035e-05;
+s.p_max        = 1.41681;
+s.M            = 10;
+s.N            = 10;
+s.n_min        = 1;
+s.n_max        = 2;
+s.m_min        = 2;
+s.m_max        = 3;
+s.k            = 10;
+s.l            = 4;
+s.ep_elite     = 0.192889;
+s.ep_dead      = 0.204716;
+s.max_mutation = 10;
+s.gray_percent = 0.773545;
+s.real_blx_share_start   = 0.868416;
+s.real_blx_share_end     = 0.941535;
+s.real_eigen_share_start = 0.131584;
+s.real_eigen_share_end   = 0.0584651;
+s.gray_uniform_share_start   = 0.461211;
+s.gray_uniform_share_end     = 0.0796675;
+s.gray_two_point_share_start = 0.0921363;
+s.gray_two_point_share_end   = 0.689922;
+s.gray_eigen_share_start     = 0.446653;
+s.gray_eigen_share_end       = 0.230411;
+s.eigen_ps                   = 0.0750305;
+s.p_motion     = 0.317617;
+s.p_trade      = 0.18145;
+s.p_war        = 0.174599;
+s.p_epidemic   = 0.177915;
+s.p_migration  = 0.14842;
+s.action_alpha         = 0.0551293;
+s.action_pmin          = 0.05;
+s.action_warmup_frac   = 0.12069;
+s.stagnation_limit     = 24;
+s.restart_country_frac = 0.146922;
+s.migration_frac       = 0.32868;
+
+
     s.genes = std::vector<int>(dim, 32);
 
     std::cout << "=== CEC2017 benchmark, dim=" << dim

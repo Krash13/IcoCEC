@@ -1,5 +1,5 @@
 // ============================================================================
-// meta_optimization_v2.cpp
+// meta_optimization_v4.cpp
 //
 // Мета-оптимизация параметров ICO (CountriesAlgorithm) с помощью GWO.
 //
