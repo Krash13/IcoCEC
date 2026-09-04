@@ -103,9 +103,9 @@ void cec17_test_func(double *x, double *f, int nx, int mx,int func_num)
 		{
 			printf("\nError: Test functions are only defined for D=2,10,20,30,50,100.\n");
 		}
-		if (nx==2&&((func_num>=17&&func_num<=22)||(func_num>=29&&func_num<=30)))
+		if (nx==2&&((func_num>=11&&func_num<=20)||(func_num>=29&&func_num<=30)))
 		{
-			printf("\nError: hf01,hf02,hf03,hf04,hf05,hf06,cf07&cf08 are NOT defined for D=2.\n");
+			printf("\nError: hf01-hf10,cf09&cf10 are NOT defined for D=2.\n");
 		}
 
 		/* Load Matrix M*/
