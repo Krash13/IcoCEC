@@ -60,6 +60,9 @@ struct IcoSettings {
     double de_f = 0.55;
     double de_cr = 0.90;
     double de_pbest_frac = 0.20;
+    bool population_reduction = true;
+    int min_country_size = 4;
+    int min_countries = 2;
     double gray_uniform_share_start   = 0.05;
     double gray_uniform_share_end     = 0.05;
     double gray_two_point_share_start = 0.05;
@@ -143,6 +146,9 @@ static Method::Params make_params(const IcoSettings& s, const Vec& x_min, const 
     p.de_f = s.de_f;
     p.de_cr = s.de_cr;
     p.de_pbest_frac = s.de_pbest_frac;
+    p.population_reduction = s.population_reduction;
+    p.min_country_size = s.min_country_size;
+    p.min_countries = s.min_countries;
     p.gray_uniform_share_start = s.gray_uniform_share_start;
     p.gray_uniform_share_end = s.gray_uniform_share_end;
     p.gray_two_point_share_start = s.gray_two_point_share_start;

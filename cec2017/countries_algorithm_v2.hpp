@@ -1383,6 +1383,13 @@ public:
         double de_cr = 0.90;
         double de_pbest_frac = 0.20;
 
+        // Linear reduction follows the L-SHADE/L-SRTDE idea, adapted to the
+        // multi-country structure. Two countries are kept by default so both
+        // encodings and country interactions can survive late in the run.
+        bool population_reduction = true;
+        int min_country_size = 4;
+        int min_countries = 2;
+
         double gray_uniform_share_start   = 0.05;
         double gray_uniform_share_end     = 0.05;
         double gray_two_point_share_start = 0.05;
@@ -1613,7 +1620,8 @@ public:
                 return {best_x, best_f, iteration};
             }
 
-            if (countries_.size() == 1) {
+            if (countries_.size() == 1 &&
+                (!p_.population_reduction || p_.min_countries > 1)) {
                 split_single_country();
             }
 
@@ -1811,8 +1819,24 @@ public:
                 for (const auto& ind : e_individuals) {
                     add_individual_to_random_country(ind);
                 }
+                int country_size_limit = 2 * p_.N;
+                if (p_.population_reduction) {
+                    const int min_country_size = std::max(4, p_.min_country_size);
+                    country_size_limit = std::max(
+                        min_country_size,
+                        static_cast<int>(std::round(
+                            static_cast<double>(2 * p_.N) +
+                            static_cast<double>(min_country_size - 2 * p_.N) * crossover_progress
+                        ))
+                    );
+                }
+
                 for (auto& c : countries_) {
-                    c->truncate(2 * p_.N);
+                    c->truncate(country_size_limit);
+                }
+
+                if (p_.population_reduction) {
+                    reduce_country_count(crossover_progress, country_size_limit);
                 }
             }
 
@@ -2234,6 +2258,102 @@ private:
                 // Re-reading real_x() also accounts for Gray quantization.
                 update_best_normalized();
             }
+        }
+    }
+
+    void reduce_country_count(double progress, int country_size_limit) {
+        if (countries_.empty()) return;
+
+        const int initial_count = std::max(1, p_.M);
+        const int min_count = std::clamp(p_.min_countries, 1, initial_count);
+        const int target_count = std::clamp(
+            static_cast<int>(std::round(
+                static_cast<double>(initial_count) +
+                static_cast<double>(min_count - initial_count) * std::clamp(progress, 0.0, 1.0)
+            )),
+            min_count,
+            initial_count
+        );
+
+        if (static_cast<int>(countries_.size()) <= target_count) return;
+
+        // Keep the best countries, but when at least two survive preserve one
+        // country of each representation if both are currently available.
+        std::sort(countries_.begin(), countries_.end(),
+                  [](const auto& a, const auto& b) { return a->best_f() < b->best_f(); });
+
+        std::vector<size_t> keep;
+        keep.reserve(target_count);
+        for (int i = 0; i < target_count; ++i) keep.push_back(static_cast<size_t>(i));
+
+        if (target_count >= 2) {
+            auto ensure_type = [&](IndividualType type) {
+                bool exists = false;
+                for (const auto& c : countries_) {
+                    if (c->itype == type) { exists = true; break; }
+                }
+                if (!exists) return;
+
+                for (size_t idx : keep) {
+                    if (countries_[idx]->itype == type) return;
+                }
+
+                size_t best_idx = countries_.size();
+                for (size_t i = target_count; i < countries_.size(); ++i) {
+                    if (countries_[i]->itype == type) {
+                        best_idx = i;
+                        break;
+                    }
+                }
+                if (best_idx == countries_.size()) return;
+
+                // Replace the worst currently selected survivor of the other type.
+                for (size_t k = keep.size(); k-- > 0;) {
+                    if (countries_[keep[k]]->itype != type) {
+                        keep[k] = best_idx;
+                        break;
+                    }
+                }
+            };
+
+            ensure_type(IndividualType::Real);
+            ensure_type(IndividualType::Gray);
+        }
+
+        std::sort(keep.begin(), keep.end());
+        keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+
+        std::vector<std::shared_ptr<Individual>> removed_leaders;
+        std::vector<std::unique_ptr<Country>> survivors;
+        survivors.reserve(target_count);
+
+        for (size_t i = 0; i < countries_.size(); ++i) {
+            if (std::binary_search(keep.begin(), keep.end(), i)) {
+                survivors.push_back(std::move(countries_[i]));
+            } else if (!countries_[i]->population.empty()) {
+                // Preserve one representative of a removed basin, but discard
+                // the rest so total population really decreases.
+                removed_leaders.push_back(countries_[i]->population[0]->clone());
+            }
+        }
+
+        countries_ = std::move(survivors);
+        while (static_cast<int>(countries_.size()) > target_count) {
+            countries_.pop_back();
+        }
+
+        for (const auto& leader : removed_leaders) {
+            add_individual_to_random_country(leader);
+        }
+
+        for (auto& c : countries_) {
+            c->truncate(country_size_limit);
+        }
+
+        for (auto& c : countries_) {
+            c->action = -1;
+            c->ally = nullptr;
+            c->enemy = nullptr;
         }
     }
 
