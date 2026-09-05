@@ -1061,18 +1061,23 @@ struct Country {
         sort_population();
     }
 
-    void extinction(int m_min, int m_max, double f_min, double f_max) {
+    void extinction(int m_min, int m_max, double f_min, double f_max,
+                    int min_survivors = 0) {
         double avg = avg_f();
         // Worse countries lose more individuals, complementing the adaptive
-        // reproduction rule above.
+        // reproduction rule above. During explicit population reduction, keep
+        // a protected core so extinction cannot silently collapse a country
+        // below the requested late-stage population floor.
         int m = std::clamp(
             (int)((m_max - m_min) * ((avg - f_min) / (f_max - f_min + 1e-15)) + m_min),
             m_min, m_max
         );
-        if (m >= size()) {
-            population.clear();
-            return;
-        }
+
+        min_survivors = std::max(0, min_survivors);
+        const int removable = std::max(0, size() - min_survivors);
+        m = std::min(m, removable);
+        if (m <= 0) return;
+
         population.erase(population.end() - m, population.end());
     }
 
@@ -1608,17 +1613,38 @@ public:
             p_.action_warmup_frac * static_cast<double>(p_.tmax)));
         int iterations_without_improvement = 0;
 
-        for (iteration = 1; iteration <= p_.tmax; ++iteration) {
-            double progress = static_cast<double>(iteration - 1) / std::max(1, p_.tmax - 1);
+        for (iteration = 1; ; ++iteration) {
+            // With an explicit FE budget, MaxFEs is the primary stopping rule.
+            // Population reduction lowers evaluations per generation, so a
+            // fixed tmax would otherwise terminate the run far below MaxFEs.
+            if (max_calls.has_value()) {
+                if (*calls_count_ >= max_calls.value()) {
+                    if (p_.printing) std::cout << "Max calls reached: " << *calls_count_ << std::endl;
+                    print_eigen_local_stats();
+                    return {best_x, best_f, iteration};
+                }
+            } else if (iteration > p_.tmax) {
+                break;
+            }
+
+            double progress;
+            if (max_calls.has_value() && max_calls.value() > 0) {
+                progress = std::clamp(
+                    static_cast<double>(*calls_count_) / static_cast<double>(max_calls.value()),
+                    0.0, 1.0
+                );
+            } else {
+                progress = static_cast<double>(iteration - 1) / std::max(1, p_.tmax - 1);
+            }
+
+            const int schedule_iteration = std::clamp(
+                1 + static_cast<int>(std::round(progress * std::max(0, p_.tmax - 1))),
+                1, std::max(1, p_.tmax)
+            );
+
             // Motion radius decreases slowly from 2.0 to 1.2; exponent 0.6
             // deliberately preserves exploration during early iterations.
             double r_max = 2.0 - 0.8 * std::pow(progress, 0.6);
-
-            if (max_calls.has_value() && *calls_count_ >= max_calls.value()) {
-                if (p_.printing) std::cout << "Max calls reached: " << *calls_count_ << std::endl;
-                print_eigen_local_stats();
-                return {best_x, best_f, iteration};
-            }
 
             if (countries_.size() == 1 &&
                 (!p_.population_reduction || p_.min_countries > 1)) {
@@ -1635,7 +1661,7 @@ public:
                 }
             }
 
-            double q_max_term = (1.0 - (double)iteration / p_.tmax) * p_.max_mutation;
+            double q_max_term = (1.0 - progress) * p_.max_mutation;
 
             // Save each country's pre-action average for reward attribution.
             std::vector<double> avg_before(countries_.size());
@@ -1672,7 +1698,9 @@ public:
             }
 
             // Recompute probabilities for the next iteration after warm-up.
-            if (p_.adaptive_actions && iteration >= warmup_iterations) {
+            if (p_.adaptive_actions &&
+                ((max_calls.has_value() && progress >= p_.action_warmup_frac) ||
+                 (!max_calls.has_value() && iteration >= warmup_iterations))) {
                 action_adapt_.renormalize(p_.action_pmin);
                 p_.p_motion    = action_adapt_.probs[0];
                 p_.p_trade     = action_adapt_.probs[1];
@@ -1796,7 +1824,7 @@ public:
                     p_.p_max,
                     f_min,
                     f_max,
-                    static_cast<int>(iteration),
+                    schedule_iteration,
                     p_.tmax,
                     eigen_basis_ptr,
                     real_blx_share,
@@ -1810,7 +1838,10 @@ public:
                     gray_eigen_share,
                     p_.parent_rank_pressure
                 );
-                c->extinction(p_.m_min, p_.m_max, f_min, f_max);
+                c->extinction(
+                    p_.m_min, p_.m_max, f_min, f_max,
+                    p_.population_reduction ? std::max(1, p_.min_country_size) : 0
+                );
             }
 
             remove_empty();
@@ -1825,8 +1856,8 @@ public:
                     country_size_limit = std::max(
                         min_country_size,
                         static_cast<int>(std::round(
-                            static_cast<double>(2 * p_.N) +
-                            static_cast<double>(min_country_size - 2 * p_.N) * crossover_progress
+                            static_cast<double>(p_.N) +
+                            static_cast<double>(min_country_size - p_.N) * crossover_progress
                         ))
                     );
                 }
