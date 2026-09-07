@@ -60,6 +60,10 @@ struct IcoSettings {
     double de_f = 0.55;
     double de_cr = 0.90;
     double de_pbest_frac = 0.20;
+    bool de_adaptive = true;
+    int de_memory_size = 5;
+    double de_f_sigma = 0.10;
+    double de_cr_sigma = 0.05;
     bool population_reduction = true;
     int min_country_size = 4;
     int min_countries = 2;
@@ -78,6 +82,8 @@ struct IcoSettings {
     int    eigen_local_trials            = 2;
     bool   eigen_local_stats             = true;
     bool   printing     = false;
+    bool   trace_logger = true;
+    std::string trace_log_path = "ico_f1_log.jsonl";
     std::vector<int> genes;
 };
 
@@ -124,6 +130,8 @@ static Method::Params make_params(const IcoSettings& s, const Vec& x_min, const 
     p.max_mutation = s.max_mutation;
     p.tmax         = s.tmax;
     p.gray_percent = s.gray_percent;
+    p.trace_logger = s.trace_logger;
+    p.trace_log_path = s.trace_log_path;
     p.printing     = s.printing;
     p.p_war        = s.p_war;
     p.p_trade      = s.p_trade;
@@ -146,6 +154,10 @@ static Method::Params make_params(const IcoSettings& s, const Vec& x_min, const 
     p.de_f = s.de_f;
     p.de_cr = s.de_cr;
     p.de_pbest_frac = s.de_pbest_frac;
+    p.de_adaptive = s.de_adaptive;
+    p.de_memory_size = s.de_memory_size;
+    p.de_f_sigma = s.de_f_sigma;
+    p.de_cr_sigma = s.de_cr_sigma;
     p.population_reduction = s.population_reduction;
     p.min_country_size = s.min_country_size;
     p.min_countries = s.min_countries;
@@ -262,7 +274,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const int iterations = 20; // число независимых прогонов на каждую функцию
+    const int iterations = 1; // число независимых прогонов на каждую функцию
 
     // Официальный протокол CEC2017: max_evals = 10000 * dim.
     std::optional<long> max_calls = 10000L * dim;
@@ -335,6 +347,9 @@ s.migration_frac       = 0.32868;
         if (dim == 2 && ((entry.id >= 11 && entry.id <= 20) || entry.id == 29 || entry.id == 30)) {
             continue;
         }
+
+        if (entry.id != 1)
+            continue;
 
         run_one_cec(entry.id, entry.name, entry.func, dim, s, iterations, 42, max_calls);
     }
