@@ -10,12 +10,8 @@
 
 #include <algorithm>
 #include <cassert>
-#include <cstdint>
 #include <cmath>
 #include <functional>
-#include <fstream>
-#include <iomanip>
-#include <sstream>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -71,71 +67,6 @@ static inline uint64_t rand_uint64(uint64_t lo, uint64_t hi_inclusive) {
 }
 
 // ============================================================================
-// Optional JSONL trace logger
-// ============================================================================
-
-struct Individual;
-
-struct IcoTraceLogger {
-    bool enabled = false;
-    std::ofstream out;
-    long iteration = 0;
-    std::shared_ptr<long> calls_count;
-
-    void open(const std::string& path, const std::shared_ptr<long>& calls) {
-        enabled = !path.empty();
-        calls_count = calls;
-        if (enabled) {
-            out.open(path, std::ios::out | std::ios::trunc);
-            if (!out) throw std::runtime_error("Cannot open ICO trace log: " + path);
-            out << std::setprecision(17);
-        }
-    }
-
-    void close() {
-        if (out.is_open()) out.close();
-        enabled = false;
-    }
-
-    long fe() const { return calls_count ? *calls_count : -1; }
-};
-
-static thread_local IcoTraceLogger* ico_trace_logger = nullptr;
-
-static inline std::string trace_vec(const std::vector<double>& x) {
-    std::ostringstream ss;
-    ss << std::setprecision(17) << '[';
-    for (size_t i = 0; i < x.size(); ++i) {
-        if (i) ss << ',';
-        ss << x[i];
-    }
-    ss << ']';
-    return ss.str();
-}
-
-static inline std::string trace_u64_vec(const std::vector<uint64_t>& x) {
-    std::ostringstream ss;
-    ss << '[';
-    for (size_t i = 0; i < x.size(); ++i) {
-        if (i) ss << ',';
-        ss << x[i];
-    }
-    ss << ']';
-    return ss.str();
-}
-
-static inline void trace_json(const std::string& event, const std::string& fields = "") {
-    if (ico_trace_logger == nullptr || !ico_trace_logger->enabled) return;
-    auto& out = ico_trace_logger->out;
-    out << "{\"event\":\"" << event << "\",\"iteration\":"
-        << ico_trace_logger->iteration << ",\"fe\":" << ico_trace_logger->fe();
-    if (!fields.empty()) out << ',' << fields;
-    out << "}\n";
-}
-
-static inline std::string trace_individual_fields(const Individual*); // defined after Individual
-
-// ============================================================================
 // Weighted country-action selection
 // 0: Motion, 1: Trade, 2: War, 3: Epidemic, 4: Migration
 // ============================================================================
@@ -155,6 +86,48 @@ static inline int weighted_action_choice(double p_motion, double p_trade, double
         if (r <= acc) return i;
     }
     return 4;
+}
+
+// Adaptive probability matching for two competing reproduction operators.
+// A failed operator receives zero credit, so its EMA reward decays and its
+// probability is automatically redistributed to the competitor.
+struct AdaptiveOperatorPair {
+    std::array<double, 2> reward = {1e-6, 1e-6};
+    std::array<double, 2> probs  = {0.5, 0.5};
+
+    void update(int idx, double credit, double alpha) {
+        if (idx < 0 || idx >= 2) return;
+        alpha = std::clamp(alpha, 0.0, 1.0);
+        credit = std::max(0.0, credit);
+        reward[idx] = (1.0 - alpha) * reward[idx] + alpha * credit;
+    }
+
+    void renormalize(double floor0, double floor1) {
+        floor0 = std::max(0.0, floor0);
+        floor1 = std::max(0.0, floor1);
+        const double floor_sum = floor0 + floor1;
+        if (floor_sum >= 1.0) {
+            probs = {floor0 / floor_sum, floor1 / floor_sum};
+            return;
+        }
+        const double sum = reward[0] + reward[1];
+        const double residual = 1.0 - floor_sum;
+        if (sum <= 1e-30) {
+            probs = {floor0 + 0.5 * residual, floor1 + 0.5 * residual};
+            return;
+        }
+        probs[0] = floor0 + residual * reward[0] / sum;
+        probs[1] = floor1 + residual * reward[1] / sum;
+    }
+};
+
+static inline double normalized_elite_credit(double elite_threshold, double child_f) {
+    if (!std::isfinite(elite_threshold) || !std::isfinite(child_f) || child_f >= elite_threshold) {
+        return 0.0;
+    }
+    const double gain = elite_threshold - child_f;
+    const double scale = std::abs(elite_threshold) + std::abs(child_f) + 1.0;
+    return gain / scale;
 }
 
 // ============================================================================
@@ -184,17 +157,6 @@ struct Individual {
     bool operator>(const Individual& o) const noexcept { return f_value > o.f_value; }
     bool operator<=(const Individual& o) const noexcept { return f_value <= o.f_value; }
 };
-
-static inline std::string trace_individual_fields(const Individual* ind) {
-    if (ind == nullptr) return "\"individual\":null";
-    std::ostringstream ss;
-    ss << std::setprecision(17)
-       << "\"type\":\"" << (ind->itype == IndividualType::Real ? "Real" : "Gray") << "\""
-       << ",\"f\":" << ind->f_value
-       << ",\"n_ep\":" << ind->n_ep
-       << ",\"x\":" << trace_vec(ind->real_x());
-    return ss.str();
-}
 
 // ============================================================================
 // Gray Individual
@@ -331,12 +293,9 @@ struct GrayIndividual : Individual {
         std::iota(positions.begin(), positions.end(), 0);
         // Partial Fisher-Yates shuffle selects distinct bits to flip.
         int flips = std::min(n, total_bits);
-        std::vector<int> flipped_positions;
-        flipped_positions.reserve(flips);
         for (int i = 0; i < flips; ++i) {
             int j = rand_int(i, total_bits - 1);
             std::swap(positions[i], positions[j]);
-            flipped_positions.push_back(positions[i]);
             bits[positions[i]] ^= 1;
         }
 
@@ -351,16 +310,6 @@ struct GrayIndividual : Individual {
         }
 
         auto p = std::make_shared<GrayIndividual>(new_code, x_min, x_max, genes, func);
-        if (ico_trace_logger != nullptr && ico_trace_logger->enabled) {
-            std::ostringstream fp;
-            fp << '[';
-            for (size_t i = 0; i < flipped_positions.size(); ++i) { if (i) fp << ','; fp << flipped_positions[i]; }
-            fp << ']';
-            trace_json("mutation", "\"mutation_type\":\"GrayBitFlip\",\"q_max_term\":" + std::to_string(q_max_term) +
-                       ",\"flips\":" + std::to_string(flips) + ",\"flipped_bit_positions\":" + fp.str() +
-                       ",\"before_f\":" + std::to_string(f_value) + ",\"after_f\":" + std::to_string(p->f_value) +
-                       ",\"before_x\":" + trace_vec(real_x()) + ",\"after_x\":" + trace_vec(p->real_x()));
-        }
         return p;
     }
 
@@ -644,24 +593,16 @@ struct RealIndividual : Individual {
     }
 
     void mutation(const FuncT& func, double p_max) {
-        const std::vector<double> before_x = x;
-        const double before_f = f_value;
         n_ep += 1;
         int dim = (int)x.size();
-        std::vector<double> perturbations(dim, 0.0);
         for (int i = 0; i < dim; ++i) {
             double range = x_max[i] - x_min[i];
             // Scale by the coordinate range, then decay the step as the same
             // individual survives additional epidemics.
             double perturb = p_max * rand_uniform(-0.5, 0.5) * range / (double)n_ep;
-            perturbations[i] = perturb;
             x[i] = std::clamp(x[i] + perturb, x_min[i], x_max[i]);
         }
         update_f(func);
-        trace_json("mutation", "\"mutation_type\":\"RealEpidemic\",\"p_max\":" + std::to_string(p_max) +
-                   ",\"before_f\":" + std::to_string(before_f) + ",\"after_f\":" + std::to_string(f_value) +
-                   ",\"before_x\":" + trace_vec(before_x) + ",\"perturb\":" + trace_vec(perturbations) +
-                   ",\"after_x\":" + trace_vec(x));
     }
 
     static std::shared_ptr<RealIndividual> crossover(
@@ -935,8 +876,6 @@ struct Country {
             auto best_dec = std::static_pointer_cast<GrayIndividual>(population[0])->decimal_x();
             for (int i = 1; i < size(); ++i) {
                 auto ind = std::static_pointer_cast<GrayIndividual>(population[i]);
-                const auto motion_before_x = ind->real_x();
-                const double motion_before_f = ind->f_value;
                 auto dec = ind->decimal_x();
                 double r = rand_uniform(0.0, r_max);
                 std::vector<uint64_t> new_dec(genes.size());
@@ -947,17 +886,11 @@ struct Country {
                     new_dec[d] = static_cast<uint64_t>(std::clamp(nd, (int64_t)0, (int64_t)max_val));
                 }
                 population[i] = GrayIndividual::from_decimal(new_dec, x_min, x_max, genes, f);
-                trace_json("motion_individual", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"" +
-                           ",\"index\":" + std::to_string(i) + ",\"r\":" + std::to_string(r) +
-                           ",\"before_f\":" + std::to_string(motion_before_f) + ",\"after_f\":" + std::to_string(population[i]->f_value) +
-                           ",\"before_x\":" + trace_vec(motion_before_x) + ",\"after_x\":" + trace_vec(population[i]->real_x()));
             }
         } else {
             const auto& best_x = std::static_pointer_cast<RealIndividual>(population[0])->x;
             for (int i = 1; i < size(); ++i) {
                 auto ind = std::static_pointer_cast<RealIndividual>(population[i]);
-                const std::vector<double> motion_before_x = ind->x;
-                const double motion_before_f = ind->f_value;
                 // One scalar is sampled per individual, so motion remains on
                 // the current-to-leader line (important for rotated problems).
                 double r = rand_uniform(0.0, r_max);
@@ -965,10 +898,6 @@ struct Country {
                     ind->x[d] = std::clamp(ind->x[d] + r * (best_x[d] - ind->x[d]), x_min[d], x_max[d]);
                 }
                 ind->update_f(f);
-                trace_json("motion_individual", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"" +
-                           ",\"index\":" + std::to_string(i) + ",\"r\":" + std::to_string(r) +
-                           ",\"before_f\":" + std::to_string(motion_before_f) + ",\"after_f\":" + std::to_string(ind->f_value) +
-                           ",\"before_x\":" + trace_vec(motion_before_x) + ",\"after_x\":" + trace_vec(ind->x));
             }
         }
         sort_population();
@@ -976,8 +905,6 @@ struct Country {
     }
 
     void do_epidemic(double elite_frac, double dead_frac, double p_max_real, double q_max_term_gray) {
-        const int epidemic_before_size = size();
-        const double epidemic_before_best = best_f();
         int n = size();
         int n_elite = (int)std::ceil(elite_frac * n);
         int n_dead  = (int)std::ceil(dead_frac * n);
@@ -1006,41 +933,22 @@ struct Country {
             }
         }
         sort_population();
-        trace_json("epidemic", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"" +
-                   ",\"size_before\":" + std::to_string(epidemic_before_size) + ",\"size_after\":" + std::to_string(size()) +
-                   ",\"elite_frac\":" + std::to_string(elite_frac) + ",\"dead_frac\":" + std::to_string(dead_frac) +
-                   ",\"best_before\":" + std::to_string(epidemic_before_best) + ",\"best_after\":" + std::to_string(best_f()));
         action = -1;
     }
 
     void do_migration(double migrate_frac = 0.3) {
-        const int migration_before_size = size();
-        const double migration_before_best = best_f();
         int n = size();
         if (n <= 1) { action = -1; return; }
 
         int n_migrate = std::clamp((int)std::ceil(migrate_frac * n), 1, n - 1);
         // Replace the worst fraction with globally sampled individuals to
         // inject diversity without discarding the country's leader.
-        if (ico_trace_logger != nullptr && ico_trace_logger->enabled) {
-            for (int i = n - n_migrate; i < n; ++i) {
-                trace_json("migration_removed", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"," +
-                           trace_individual_fields(population[i].get()));
-            }
-        }
         population.erase(population.end() - n_migrate, population.end());
 
         for (int i = 0; i < n_migrate; ++i) {
-            auto ni = make_random_individual();
-            trace_json("migration_added", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"," +
-                       trace_individual_fields(ni.get()));
-            population.push_back(std::move(ni));
+            population.push_back(make_random_individual());
         }
         sort_population();
-        trace_json("migration", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"" +
-                   ",\"size_before\":" + std::to_string(migration_before_size) + ",\"size_after\":" + std::to_string(size()) +
-                   ",\"fraction\":" + std::to_string(migrate_frac) +
-                   ",\"best_before\":" + std::to_string(migration_before_best) + ",\"best_after\":" + std::to_string(best_f()));
         action = -1;
     }
 
@@ -1056,6 +964,7 @@ struct Country {
         double de_f,
         double de_cr,
         double de_pbest_frac,
+        double de_pool_frac,
         bool de_adaptive,
         int de_memory_size,
         double de_f_sigma,
@@ -1063,7 +972,10 @@ struct Country {
         double gray_uniform_share,
         double gray_two_point_share,
         double gray_eigen_share,
-        double parent_rank_pressure) {
+        double parent_rank_pressure,
+        AdaptiveOperatorPair* real_operator_adapt,
+        AdaptiveOperatorPair* gray_operator_adapt,
+        double operator_alpha) {
 
         if (size() < 2) return;
 
@@ -1081,9 +993,6 @@ struct Country {
         // Children produced earlier in this call must not become parents in
         // the same generation.
         const int parent_count = size();
-        trace_json("reproduction_begin", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"" +
-                   ",\"type\":\"" + std::string(itype == IndividualType::Real ? "Real" : "Gray") + "\"" +
-                   ",\"parent_count\":" + std::to_string(parent_count) + ",\"children_target\":" + std::to_string(itype == IndividualType::Gray ? 2*n : 2*n));
 
         std::vector<double> successful_f;
         std::vector<double> successful_cr;
@@ -1092,10 +1001,18 @@ struct Country {
         int de_successes = 0;
 
         if (itype == IndividualType::Gray) {
+            if (gray_operator_adapt != nullptr) {
+                gray_uniform_share = gray_operator_adapt->probs[0];
+                gray_two_point_share = gray_operator_adapt->probs[1];
+                gray_eigen_share = 0.0;
+            }
             gray_uniform_share = std::max(0.0, gray_uniform_share);
             gray_two_point_share = std::max(0.0, gray_two_point_share);
             gray_eigen_share = std::max(0.0, gray_eigen_share);
             double crossover_share_sum = gray_uniform_share + gray_two_point_share + gray_eigen_share;
+            const int gray_elite_count = std::clamp(
+                static_cast<int>(std::ceil(0.20 * parent_count)), 1, parent_count);
+            const double gray_elite_threshold = population[gray_elite_count - 1]->f_value;
 
             if (crossover_share_sum <= 0.0) {
                 gray_uniform_share = 0.05;
@@ -1116,18 +1033,30 @@ struct Country {
                 const double crossover_choice = rand_uniform(0.0, crossover_share_sum);
                 std::pair<std::shared_ptr<GrayIndividual>, std::shared_ptr<GrayIndividual>> children;
 
+                int operator_idx = 0;
                 if (crossover_choice < gray_uniform_share) {
                     children = GrayIndividual::crossover(*a, *b, true, f);
+                    operator_idx = 0;
                 } else if (crossover_choice < gray_uniform_share + gray_two_point_share) {
                     children = GrayIndividual::crossover(*a, *b, false, f);
+                    operator_idx = 1;
                 } else {
-                    children = GrayIndividual::eigen_crossover(*a, *b, eigen_basis, f);
+                    // Eigen crossover is disabled in the clean DE branch.
+                    children = GrayIndividual::crossover(*a, *b, false, f);
+                    operator_idx = 1;
                 }
 
-                trace_json("offspring", "\"operator\":\"Gray" + std::string(crossover_choice < gray_uniform_share ? "Uniform" : (crossover_choice < gray_uniform_share + gray_two_point_share ? "TwoPoint" : "Eigen")) + "\"" +
-                           ",\"parent1_index\":" + std::to_string(k1) + ",\"parent2_index\":" + std::to_string(k2) +
-                           ",\"parent1\":{" + trace_individual_fields(a.get()) + "},\"parent2\":{" + trace_individual_fields(b.get()) + "}" +
-                           ",\"child1\":{" + trace_individual_fields(children.first.get()) + "},\"child2\":{" + trace_individual_fields(children.second.get()) + "}");
+                if (gray_operator_adapt != nullptr) {
+                    gray_operator_adapt->update(
+                        operator_idx,
+                        normalized_elite_credit(gray_elite_threshold, children.first->f_value),
+                        operator_alpha);
+                    gray_operator_adapt->update(
+                        operator_idx,
+                        normalized_elite_credit(gray_elite_threshold, children.second->f_value),
+                        operator_alpha);
+                }
+
                 population.push_back(std::move(children.first));
                 population.push_back(std::move(children.second));
             }
@@ -1139,6 +1068,11 @@ struct Country {
                 p_min, p_max
             );
 
+            if (real_operator_adapt != nullptr) {
+                real_blx_share = real_operator_adapt->probs[0];
+                real_eigen_share = 0.0;
+                real_de_share = real_operator_adapt->probs[1];
+            }
             real_blx_share = std::max(0.0, real_blx_share);
             real_eigen_share = std::max(0.0, real_eigen_share);
             real_de_share = std::max(0.0, real_de_share);
@@ -1154,6 +1088,7 @@ struct Country {
             de_f = std::clamp(de_f, 0.0, 1.0);
             de_cr = std::clamp(de_cr, 0.0, 1.0);
             de_pbest_frac = std::clamp(de_pbest_frac, 0.0, 1.0);
+            de_pool_frac = std::clamp(de_pool_frac, 0.0, 1.0);
             de_memory_size = std::max(1, de_memory_size);
 
             if (de_memory_f.size() != static_cast<size_t>(de_memory_size)) {
@@ -1163,6 +1098,16 @@ struct Country {
                 de_success_rate = 0.5;
             }
 
+            const int de_pool_count = std::clamp(
+                static_cast<int>(std::ceil(de_pool_frac * parent_count)),
+                std::min(4, parent_count), parent_count
+            );
+            const int de_elite_count = std::clamp(
+                static_cast<int>(std::ceil(de_pbest_frac * de_pool_count)),
+                std::min(2, de_pool_count), de_pool_count
+            );
+            const double de_elite_threshold = population[de_elite_count - 1]->f_value;
+
             for (int i = 0; i < 2 * n; ++i) {
                 const double crossover_choice = rand_uniform(0.0, crossover_share_sum);
 
@@ -1170,10 +1115,11 @@ struct Country {
                     // L-SRTDE/RDEx-style current-to-pbest/1. The target and
                     // second differential donor remain uniform, while r1 is
                     // rank-biased and pbest comes from the elite prefix.
-                    const int target_idx = rand_int(0, parent_count - 1);
-                    const int pbest_count = std::clamp(
-                        static_cast<int>(std::ceil(de_pbest_frac * parent_count)),
-                        2, parent_count);
+                    // Keep DE inside the best prefix of the country. Very bad
+                    // outliers stay available to diversification operators but
+                    // cannot distort the differential geometry of exploitation.
+                    const int target_idx = rand_int(0, de_pool_count - 1);
+                    const int pbest_count = de_elite_count;
 
                     int pbest_idx = rand_int(0, pbest_count - 1);
                     while (pbest_idx == target_idx) {
@@ -1181,13 +1127,13 @@ struct Country {
                     }
 
                     int r1_idx = select_rank_biased_parent(
-                        parent_count, parent_rank_pressure, target_idx);
+                        de_pool_count, parent_rank_pressure, target_idx);
                     while (r1_idx == pbest_idx) {
                         r1_idx = select_rank_biased_parent(
-                            parent_count, parent_rank_pressure, target_idx);
+                            de_pool_count, parent_rank_pressure, target_idx);
                     }
 
-                    int r2_idx = rand_int(0, parent_count - 1);
+                    int r2_idx = rand_int(0, de_pool_count - 1);
                     while (r2_idx == target_idx || r2_idx == pbest_idx || r2_idx == r1_idx) {
                         r2_idx = rand_int(0, parent_count - 1);
                     }
@@ -1225,21 +1171,26 @@ struct Country {
 
                     de_attempts++;
                     const double improvement = target->f_value - child->f_value;
-                    if (improvement > 0.0) {
+                    // Success-history is learned only from offspring that are
+                    // actually competitive with the current elite region. A
+                    // huge improvement of a catastrophic target (for example
+                    // 1e10 -> 1e9 while elite fitness is ~1e3) must not dominate
+                    // F/CR memory updates.
+                    if (improvement > 0.0 && child->f_value <= de_elite_threshold) {
                         de_successes++;
                         successful_f.push_back(sampled_f);
                         successful_cr.push_back(actual_cr);
-                        successful_delta.push_back(improvement);
+                        const double scale = std::abs(target->f_value) +
+                                             std::abs(child->f_value) + 1.0;
+                        successful_delta.push_back(improvement / scale);
+                    }
+                    if (real_operator_adapt != nullptr) {
+                        real_operator_adapt->update(
+                            1,
+                            normalized_elite_credit(de_elite_threshold, child->f_value),
+                            operator_alpha);
                     }
 
-                    trace_json("offspring", std::string("\"operator\":\"DE_current_to_pbest_1\"") +
-                               ",\"target_index\":" + std::to_string(target_idx) + ",\"pbest_index\":" + std::to_string(pbest_idx) +
-                               ",\"r1_index\":" + std::to_string(r1_idx) + ",\"r2_index\":" + std::to_string(r2_idx) +
-                               ",\"F\":" + std::to_string(sampled_f) + ",\"CR\":" + std::to_string(sampled_cr) +
-                               ",\"actual_cr\":" + std::to_string(actual_cr) +
-                               ",\"target\":{" + trace_individual_fields(target.get()) + "},\"pbest\":{" + trace_individual_fields(pbest.get()) + "}" +
-                               ",\"r1\":{" + trace_individual_fields(r1.get()) + "},\"r2\":{" + trace_individual_fields(r2.get()) + "}" +
-                               ",\"child\":{" + trace_individual_fields(child.get()) + "},\"improvement\":" + std::to_string(std::max(0.0, target->f_value - child->f_value)));
                     population.push_back(std::move(child));
                     continue;
                 }
@@ -1252,20 +1203,27 @@ struct Country {
                 auto a = std::static_pointer_cast<RealIndividual>(population[k1]);
                 auto b = std::static_pointer_cast<RealIndividual>(population[k2]);
 
-                std::shared_ptr<RealIndividual> child;
-                const char* operator_name = nullptr;
-                if (crossover_choice < real_blx_share) {
-                    operator_name = "RealBLX";
-                    child = RealIndividual::crossover(*a, *b, p, x_min, x_max, f);
+                if (crossover_choice < real_blx_share || parent_count < 4) {
+                    auto child = RealIndividual::crossover(*a, *b, p, x_min, x_max, f);
+                    if (real_operator_adapt != nullptr) {
+                        real_operator_adapt->update(
+                            0,
+                            normalized_elite_credit(de_elite_threshold, child->f_value),
+                            operator_alpha);
+                    }
+                    population.push_back(std::move(child));
                 } else {
-                    operator_name = "RealEigen";
-                    child = RealIndividual::eigen_crossover(*a, *b, eigen_basis, x_min, x_max, f);
+                    // Eigen crossover is disabled; any numerical fall-through
+                    // is repaired to BLX so covariance never re-enters the run.
+                    auto child = RealIndividual::crossover(*a, *b, p, x_min, x_max, f);
+                    if (real_operator_adapt != nullptr) {
+                        real_operator_adapt->update(
+                            0,
+                            normalized_elite_credit(de_elite_threshold, child->f_value),
+                            operator_alpha);
+                    }
+                    population.push_back(std::move(child));
                 }
-                trace_json("offspring", "\"operator\":\"" + std::string(operator_name) + "\"" +
-                           ",\"parent1_index\":" + std::to_string(k1) + ",\"parent2_index\":" + std::to_string(k2) +
-                           ",\"parent1\":{" + trace_individual_fields(a.get()) + "},\"parent2\":{" + trace_individual_fields(b.get()) + "}" +
-                           ",\"child\":{" + trace_individual_fields(child.get()) + "}");
-                population.push_back(std::move(child));
             }
         }
 
@@ -1299,11 +1257,6 @@ struct Country {
                         0.5 * (de_memory_cr[de_memory_index] + lehmer_cr);
                 }
 
-                trace_json("de_memory_update", "\"slot\":" + std::to_string(de_memory_index) +
-                           ",\"successful_count\":" + std::to_string(successful_f.size()) +
-                           ",\"memory_f\":" + std::to_string(de_memory_f[de_memory_index]) +
-                           ",\"memory_cr\":" + std::to_string(de_memory_cr[de_memory_index]) +
-                           ",\"success_rate\":" + std::to_string(de_success_rate));
                 de_memory_index = (de_memory_index + 1) % de_memory_size;
             }
         }
@@ -1318,8 +1271,6 @@ struct Country {
         // reproduction rule above. During explicit population reduction, keep
         // a protected core so extinction cannot silently collapse a country
         // below the requested late-stage population floor.
-        const int extinction_before_size = size();
-        const double extinction_before_best = best_f();
         int m = std::clamp(
             (int)((m_max - m_min) * ((avg - f_min) / (f_max - f_min + 1e-15)) + m_min),
             m_min, m_max
@@ -1330,27 +1281,11 @@ struct Country {
         m = std::min(m, removable);
         if (m <= 0) return;
 
-        if (ico_trace_logger != nullptr && ico_trace_logger->enabled) {
-            for (int i = size() - m; i < size(); ++i) {
-                trace_json("extinction_removed", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"," +
-                           trace_individual_fields(population[i].get()));
-            }
-        }
         population.erase(population.end() - m, population.end());
-        trace_json("extinction", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"" +
-                   ",\"size_before\":" + std::to_string(extinction_before_size) + ",\"size_after\":" + std::to_string(size()) +
-                   ",\"removed\":" + std::to_string(extinction_before_size - size()) +
-                   ",\"best_before\":" + std::to_string(extinction_before_best) + ",\"best_after\":" + std::to_string(best_f()));
     }
 
     void truncate(int max_size) {
         if (size() > max_size) {
-            if (ico_trace_logger != nullptr && ico_trace_logger->enabled) {
-                for (int i = max_size; i < size(); ++i) {
-                    trace_json("truncate_removed", "\"country_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "\"," +
-                               trace_individual_fields(population[i].get()));
-                }
-            }
             population.resize(max_size);
         }
     }
@@ -1433,20 +1368,10 @@ struct Country {
 
         auto idx1 = pick_indices(c1.size(), actual_k);
         auto idx2 = pick_indices(c2.size(), actual_k);
-        trace_json("trade_begin", "\"country1_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(&c1)) + "\"" +
-                   ",\"country2_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(&c2)) + "\"" +
-                   ",\"k\":" + std::to_string(actual_k) + ",\"c1_best\":" + std::to_string(c1.best_f()) +
-                   ",\"c2_best\":" + std::to_string(c2.best_f()));
 
         std::vector<std::shared_ptr<Individual>> t1, t2;
         for (int i : idx1) t1.push_back(c1.population[i]->clone());
         for (int i : idx2) t2.push_back(c2.population[i]->clone());
-        for (size_t i = 0; i < t1.size(); ++i) {
-            trace_json("trade_transfer", "\"from\":\"c1\",\"to\":\"c2\",\"source_index\":" + std::to_string(idx1[i]) + "," + trace_individual_fields(t1[i].get()));
-        }
-        for (size_t i = 0; i < t2.size(); ++i) {
-            trace_json("trade_transfer", "\"from\":\"c2\",\"to\":\"c1\",\"source_index\":" + std::to_string(idx2[i]) + "," + trace_individual_fields(t2[i].get()));
-        }
 
         remove_by_idx(c1.population, idx1);
         remove_by_idx(c2.population, idx2);
@@ -1542,9 +1467,6 @@ struct Country {
 
         const auto idx1 = pick_indices(c1.size(), actual_l);
         const auto idx2 = pick_indices(c2.size(), actual_l);
-        trace_json("war_begin", "\"country1_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(&c1)) + "\"" +
-                   ",\"country2_ptr\":\"" + std::to_string(reinterpret_cast<std::uintptr_t>(&c2)) + "\"" +
-                   ",\"warriors\":" + std::to_string(actual_l));
 
         // Recruited warriors are temporarily removed from their countries.
         std::vector<std::shared_ptr<Individual>> war1, war2;
@@ -1564,8 +1486,6 @@ struct Country {
         // Each duel keeps its winner and creates a replacement in the losing
         // country. Only surviving warriors can later become prisoners.
         for (int i = 0; i < actual_l; ++i) {
-            trace_json("war_duel", "\"duel\":" + std::to_string(i) +
-                       ",\"warrior1\":{" + trace_individual_fields(war1[i].get()) + "},\"warrior2\":{" + trace_individual_fields(war2[i].get()) + "}");
             if (*war1[i] < *war2[i]) {
                 wins1++;
                 survivors1.push_back(war1[i]);
@@ -1659,10 +1579,10 @@ public:
 
         // Crossover operator shares. Values are linearly interpolated from
         // start to end according to FEs / MaxFEs and normalized when selected.
-        double real_blx_share_start   = 0.35;
-        double real_blx_share_end     = 0.15;
-        double real_eigen_share_start = 0.35;
-        double real_eigen_share_end   = 0.15;
+        double real_blx_share_start   = 0.70;
+        double real_blx_share_end     = 0.30;
+        double real_eigen_share_start = 0.00;
+        double real_eigen_share_end   = 0.00;
         double real_de_share_start    = 0.30;
         double real_de_share_end      = 0.70;
 
@@ -1670,6 +1590,11 @@ public:
         double de_f = 0.55;
         double de_cr = 0.90;
         double de_pbest_frac = 0.20;
+        double de_pool_frac = 0.60;
+        double de_pool_frac_end = 0.40;
+        double de_exploitation_start_frac = 0.18;
+        double de_exploit_share_start = 0.45;
+        double de_exploit_share_end = 0.85;
         bool de_adaptive = true;
         int de_memory_size = 5;
         double de_f_sigma = 0.10;
@@ -1678,16 +1603,16 @@ public:
         // Linear reduction follows the L-SHADE/L-SRTDE idea, adapted to the
         // multi-country structure. Two countries are kept by default so both
         // encodings and country interactions can survive late in the run.
-        bool population_reduction = true;
+        bool population_reduction = false;
         int min_country_size = 4;
         int min_countries = 2;
 
-        double gray_uniform_share_start   = 0.05;
-        double gray_uniform_share_end     = 0.05;
-        double gray_two_point_share_start = 0.05;
-        double gray_two_point_share_end   = 0.05;
-        double gray_eigen_share_start     = 0.90;
-        double gray_eigen_share_end       = 0.90;
+        double gray_uniform_share_start   = 0.50;
+        double gray_uniform_share_end     = 0.50;
+        double gray_two_point_share_start = 0.50;
+        double gray_two_point_share_end   = 0.50;
+        double gray_eigen_share_start     = 0.00;
+        double gray_eigen_share_end       = 0.00;
 
         // Fraction of the best population used to estimate the Eigen basis.
         double eigen_ps = 0.50;
@@ -1695,13 +1620,13 @@ public:
         // Late Eigen-guided local search around the current global best.
         // Sigma is expressed in normalized [0,1] coordinates and decreases
         // geometrically after eigen_local_search_start_frac of the FE budget.
-        bool   eigen_local_search            = true;
+        bool   eigen_local_search            = false;
         double eigen_local_search_start_frac = 0.50;
         double eigen_local_sigma_start       = 0.02;
         double eigen_local_sigma_end         = 1e-8;
         double eigen_min_axis_scale          = 1e-3;
         int    eigen_local_trials            = 2;
-        bool   eigen_local_stats             = true;
+        bool   eigen_local_stats             = false;
 
         // Legacy Eigen parameters from the previous binomial implementation.
         // They are intentionally kept commented out: gray_eigen_prob is replaced
@@ -1714,11 +1639,6 @@ public:
 
         bool printing = true;
 
-        // Full JSONL diagnostic trace. Disabled by default because one CEC run
-        // can produce a large log file.
-        bool trace_logger = false;
-        std::string trace_log_path = "ico_trace.jsonl";
-
         // Probabilities of the five country actions. The order used throughout
         // the implementation is Motion, Trade, War, Epidemic, Migration.
         // Values are normalized during initialization if they do not sum to 1.
@@ -1729,6 +1649,9 @@ public:
         double p_migration = 0.15;
 
         bool   adaptive_actions   = true;
+        bool   adaptive_reproduction_operators = true;
+        double operator_alpha     = 0.10;
+        double operator_pmin      = 0.05;
         double action_alpha       = 0.076; // EMA learning rate for action rewards.
         double action_pmin        = 0.05;  // Probability floor for every action.
         double action_warmup_frac = 0.14;  // Fraction of tmax used for warm-up.
@@ -1749,10 +1672,13 @@ public:
         void update(int action_idx, double f_before, double f_after, long calls_spent, double alpha) {
             if (action_idx < 0 || action_idx >= 5) return;
             if (calls_spent <= 0) calls_spent = 1;
-            // Credit is objective improvement per function evaluation. The EMA
-            // makes adaptation responsive without discarding prior evidence.
+            // Use scale-invariant improvement of the relevant country best,
+            // not average-fitness changes. This prevents an operation such as
+            // 1e10 -> 1e9 on a bad individual from overwhelming a meaningful
+            // elite improvement such as 2700 -> 2600.
             double improvement = std::max(0.0, f_before - f_after);
-            double credit = improvement / (double)calls_spent;
+            double scale = std::abs(f_before) + std::abs(f_after) + 1.0;
+            double credit = (improvement / scale) / (double)calls_spent;
             reward[action_idx] = (1.0 - alpha) * reward[action_idx] + alpha * credit;
         }
 
@@ -1760,7 +1686,8 @@ public:
             double sum = 0.0;
             for (double r : reward) sum += r;
             if (sum <= 1e-15) {
-                probs = {0.25, 0.20, 0.20, 0.20, 0.15};
+                // No evidence yet: keep the configured/current probabilities
+                // instead of silently reverting to unrelated hard-coded values.
                 return;
             }
             // Probability matching with a guaranteed floor for every action.
@@ -1845,6 +1772,11 @@ public:
             p_.p_migration /= sum_p;
         }
 
+        action_adapt_real_.probs = {p_.p_motion, p_.p_trade, p_.p_war, p_.p_epidemic, p_.p_migration};
+        action_adapt_gray_.probs = action_adapt_real_.probs;
+        real_operator_adapt_.probs = {p_.real_blx_share_start, p_.real_de_share_start};
+        gray_operator_adapt_.probs = {p_.gray_uniform_share_start, p_.gray_two_point_share_start};
+
         // The shared counter survives copies/moves of the objective wrapper and
         // of CountriesAlgorithm instances stored inside std::function.
         auto counter = calls_count_;
@@ -1893,14 +1825,6 @@ public:
         long iteration = 0;
 
         reset_eigen_local_stats();
-        IcoTraceLogger trace_logger_instance;
-        if (p_.trace_logger) {
-            trace_logger_instance.open(p_.trace_log_path, calls_count_);
-            ico_trace_logger = &trace_logger_instance;
-            trace_json("run_start", "\"countries\":" + std::to_string(countries_.size()) +
-                       ",\"dimension\":" + std::to_string(p_.x_min.size()) +
-                       ",\"max_calls\":" + std::to_string(max_calls.value_or(-1)));
-        }
 
         if (!countries_.empty() && !countries_[0]->population.empty()) {
             best_x = countries_[0]->population[0]->real_x();
@@ -1914,7 +1838,6 @@ public:
         int iterations_without_improvement = 0;
 
         for (iteration = 1; ; ++iteration) {
-            if (ico_trace_logger != nullptr) ico_trace_logger->iteration = iteration;
             // With an explicit FE budget, MaxFEs is the primary stopping rule.
             // Population reduction lowers evaluations per generation, so a
             // fixed tmax would otherwise terminate the run far below MaxFEs.
@@ -1922,8 +1845,6 @@ public:
                 if (*calls_count_ >= max_calls.value()) {
                     if (p_.printing) std::cout << "Max calls reached: " << *calls_count_ << std::endl;
                     print_eigen_local_stats();
-                    trace_json("run_end", "\"reason\":\"max_calls\",\"best_f\":" + std::to_string(best_f) + ",\"best_x\":" + trace_vec(best_x));
-                    if (p_.trace_logger) { trace_logger_instance.close(); ico_trace_logger = nullptr; }
                     return {best_x, best_f, iteration};
                 }
             } else if (iteration > p_.tmax) {
@@ -1954,57 +1875,31 @@ public:
                 split_single_country();
             }
 
-            if (p_.trace_logger) {
-                trace_json("generation_begin", "\"progress\":" + std::to_string(progress) +
-                           ",\"country_count\":" + std::to_string(countries_.size()));
-                for (size_t ci = 0; ci < countries_.size(); ++ci) {
-                    trace_json("country_state", "\"phase\":\"before_actions\",\"country\":" + std::to_string(ci) +
-                               ",\"size\":" + std::to_string(countries_[ci]->size()) +
-                               ",\"best_f\":" + std::to_string(countries_[ci]->best_f()) +
-                               ",\"avg_f\":" + std::to_string(countries_[ci]->avg_f()) +
-                               ",\"type\":\"" + std::string(countries_[ci]->itype == IndividualType::Real ? "Real" : "Gray") + "\"");
-                }
-            }
-
             std::vector<Country*> ptrs;
             ptrs.reserve(countries_.size());
             for (auto& c : countries_) ptrs.push_back(c.get());
 
             for (auto* c : ptrs) {
                 if (c->action == -1) {
-                    c->select_action(ptrs, p_.p_motion, p_.p_trade, p_.p_war, p_.p_epidemic, p_.p_migration);
-                }
-            }
-
-            if (p_.trace_logger) {
-                for (size_t ci = 0; ci < countries_.size(); ++ci) {
-                    trace_json("action_selected", "\"country\":" + std::to_string(ci) +
-                               ",\"action\":" + std::to_string(countries_[ci]->action) +
-                               ",\"best_f\":" + std::to_string(countries_[ci]->best_f()) +
-                               ",\"avg_f\":" + std::to_string(countries_[ci]->avg_f()));
+                    const auto& ap = (c->itype == IndividualType::Real)
+                        ? action_adapt_real_.probs : action_adapt_gray_.probs;
+                    c->select_action(ptrs, ap[0], ap[1], ap[2], ap[3], ap[4]);
                 }
             }
 
             double q_max_term = (1.0 - progress) * p_.max_mutation;
 
-            // Save each country's pre-action average for reward attribution.
-            std::vector<double> avg_before(countries_.size());
-            for (size_t i = 0; i < countries_.size(); ++i) {
-                avg_before[i] = countries_[i]->avg_f();
-            }
-
             for (size_t i = 0; i < countries_.size(); ++i) {
                 auto& c = countries_[i];
                 int action_index = c->action;
+                if (action_index == -1) continue;
+
                 long calls_before = *calls_count_;
-                const double action_best_before = c->best_f();
-                const double action_avg_before = c->avg_f();
-                const int action_size_before = c->size();
-                if (p_.trace_logger) {
-                    trace_json("action_begin", "\"country\":" + std::to_string(i) + ",\"action\":" + std::to_string(action_index) +
-                               ",\"size\":" + std::to_string(action_size_before) + ",\"best_f\":" + std::to_string(action_best_before) +
-                               ",\"avg_f\":" + std::to_string(action_avg_before));
-                }
+                double f_before = c->best_f();
+                Country* partner = nullptr;
+                if (action_index == 1) partner = c->ally;
+                if (action_index == 2) partner = c->enemy;
+                if (partner != nullptr) f_before = std::min(f_before, partner->best_f());
 
                 if (action_index == 0) {
                     c->do_motion(r_max);
@@ -2019,34 +1914,26 @@ public:
                     c->do_migration(p_.migration_frac);
                 }
 
-                if (p_.trace_logger) {
-                    trace_json("action_end", "\"country\":" + std::to_string(i) + ",\"action\":" + std::to_string(action_index) +
-                               ",\"size_before\":" + std::to_string(action_size_before) + ",\"size_after\":" + std::to_string(c->size()) +
-                               ",\"best_before\":" + std::to_string(action_best_before) + ",\"best_after\":" + std::to_string(c->best_f()) +
-                               ",\"avg_before\":" + std::to_string(action_avg_before) + ",\"avg_after\":" + std::to_string(c->avg_f()) +
-                               ",\"fes_spent\":" + std::to_string(*calls_count_ - calls_before));
-                }
-
-                // Paired operations reset the partner's action internally, so
-                // reward is naturally assigned only to the initiating country.
-                if (p_.adaptive_actions && action_index != -1) {
+                if (p_.adaptive_actions) {
                     long calls_after = *calls_count_;
-                    double f_after = c->avg_f();
-                    action_adapt_.update(action_index, avg_before[i], f_after,
-                                         calls_after - calls_before, p_.action_alpha);
+                    double f_after = c->best_f();
+                    if (partner != nullptr && partner->size() > 0) {
+                        f_after = std::min(f_after, partner->best_f());
+                    }
+                    auto& adapt = (c->itype == IndividualType::Real)
+                        ? action_adapt_real_ : action_adapt_gray_;
+                    adapt.update(action_index, f_before, f_after,
+                                 calls_after - calls_before, p_.action_alpha);
                 }
             }
 
-            // Recompute probabilities for the next iteration after warm-up.
+            // Probability matching: a zero-credit operation decays; successful
+            // competitors therefore receive the freed probability mass.
             if (p_.adaptive_actions &&
                 ((max_calls.has_value() && progress >= p_.action_warmup_frac) ||
                  (!max_calls.has_value() && iteration >= warmup_iterations))) {
-                action_adapt_.renormalize(p_.action_pmin);
-                p_.p_motion    = action_adapt_.probs[0];
-                p_.p_trade     = action_adapt_.probs[1];
-                p_.p_war       = action_adapt_.probs[2];
-                p_.p_epidemic  = action_adapt_.probs[3];
-                p_.p_migration = action_adapt_.probs[4];
+                action_adapt_real_.renormalize(p_.action_pmin);
+                action_adapt_gray_.renormalize(p_.action_pmin);
             }
 
             remove_empty();
@@ -2081,18 +1968,34 @@ public:
                 return start + crossover_progress * (end - start);
             };
 
-            const double real_blx_share = interpolate_share(
-                p_.real_blx_share_start, p_.real_blx_share_end);
-            const double real_eigen_share = interpolate_share(
-                p_.real_eigen_share_start, p_.real_eigen_share_end);
-            const double real_de_share = interpolate_share(
-                p_.real_de_share_start, p_.real_de_share_end);
-            const double gray_uniform_share = interpolate_share(
-                p_.gray_uniform_share_start, p_.gray_uniform_share_end);
-            const double gray_two_point_share = interpolate_share(
-                p_.gray_two_point_share_start, p_.gray_two_point_share_end);
-            const double gray_eigen_share = interpolate_share(
-                p_.gray_eigen_share_start, p_.gray_eigen_share_end);
+            double effective_de_pool_frac = p_.de_pool_frac;
+            double de_probability_floor = p_.operator_pmin;
+            if (crossover_progress >= p_.de_exploitation_start_frac) {
+                const double den = std::max(1e-15, 1.0 - p_.de_exploitation_start_frac);
+                const double exploit_progress = std::clamp(
+                    (crossover_progress - p_.de_exploitation_start_frac) / den,
+                    0.0, 1.0
+                );
+                de_probability_floor = p_.de_exploit_share_start + exploit_progress *
+                    (p_.de_exploit_share_end - p_.de_exploit_share_start);
+                effective_de_pool_frac = p_.de_pool_frac + exploit_progress *
+                    (p_.de_pool_frac_end - p_.de_pool_frac);
+            }
+
+            if (p_.adaptive_reproduction_operators) {
+                real_operator_adapt_.renormalize(p_.operator_pmin, de_probability_floor);
+                gray_operator_adapt_.renormalize(p_.operator_pmin, p_.operator_pmin);
+            }
+            const double real_blx_share = p_.adaptive_reproduction_operators
+                ? real_operator_adapt_.probs[0] : (1.0 - de_probability_floor);
+            const double real_eigen_share = 0.0;
+            const double real_de_share = p_.adaptive_reproduction_operators
+                ? real_operator_adapt_.probs[1] : de_probability_floor;
+            const double gray_uniform_share = p_.adaptive_reproduction_operators
+                ? gray_operator_adapt_.probs[0] : 0.50;
+            const double gray_two_point_share = p_.adaptive_reproduction_operators
+                ? gray_operator_adapt_.probs[1] : 0.50;
+            const double gray_eigen_share = 0.0;
 
             Eigen::MatrixXd eigen_basis;
             Eigen::VectorXd eigen_values;
@@ -2106,7 +2009,7 @@ public:
                 crossover_progress >= p_.eigen_local_search_start_frac;
 
             // The same covariance basis is used by Gray and real individuals.
-            if (p_.x_min.size() > 1 &&
+            if (false && p_.x_min.size() > 1 &&
                 (real_eigen_share > 0.0 ||
                  gray_eigen_share > 0.0 ||
                  p_.eigen_local_search)) {
@@ -2121,7 +2024,7 @@ public:
             // Crossover can only recombine the spread already present between
             // parents. This late local search can make arbitrarily small steps
             // around the global best along covariance eigen-directions.
-            if (p_.eigen_local_search &&
+            if (false && p_.eigen_local_search &&
                 eigen_basis_ptr != nullptr &&
                 crossover_progress >= p_.eigen_local_search_start_frac &&
                 (!max_calls.has_value() || *calls_count_ < max_calls.value())) {
@@ -2173,6 +2076,7 @@ public:
                     p_.de_f,
                     p_.de_cr,
                     p_.de_pbest_frac,
+                    effective_de_pool_frac,
                     p_.de_adaptive,
                     p_.de_memory_size,
                     p_.de_f_sigma,
@@ -2180,7 +2084,10 @@ public:
                     gray_uniform_share,
                     gray_two_point_share,
                     gray_eigen_share,
-                    p_.parent_rank_pressure
+                    p_.parent_rank_pressure,
+                    p_.adaptive_reproduction_operators ? &real_operator_adapt_ : nullptr,
+                    p_.adaptive_reproduction_operators ? &gray_operator_adapt_ : nullptr,
+                    p_.operator_alpha
                 );
                 c->extinction(
                     p_.m_min, p_.m_max, f_min, f_max,
@@ -2206,21 +2113,12 @@ public:
                     );
                 }
 
-                for (size_t ci = 0; ci < countries_.size(); ++ci) {
-                    const int size_before = countries_[ci]->size();
-                    countries_[ci]->truncate(country_size_limit);
-                    trace_json("population_reduction", "\"country\":" + std::to_string(ci) +
-                               ",\"limit\":" + std::to_string(country_size_limit) +
-                               ",\"size_before\":" + std::to_string(size_before) +
-                               ",\"size_after\":" + std::to_string(countries_[ci]->size()));
+                for (auto& c : countries_) {
+                    c->truncate(country_size_limit);
                 }
 
                 if (p_.population_reduction) {
-                    const size_t countries_before = countries_.size();
                     reduce_country_count(crossover_progress, country_size_limit);
-                    trace_json("country_reduction", "\"count_before\":" + std::to_string(countries_before) +
-                               ",\"count_after\":" + std::to_string(countries_.size()) +
-                               ",\"country_size_limit\":" + std::to_string(country_size_limit));
                 }
             }
 
@@ -2232,17 +2130,13 @@ public:
             if (countries_[0]->population[0]->f_value < best_f) {
                 best_f = countries_[0]->population[0]->f_value;
                 best_x = countries_[0]->population[0]->real_x();
-                trace_json("global_best", "\"f\":" + std::to_string(best_f) + ",\"x\":" + trace_vec(best_x));
                 iterations_without_improvement = 0;
             } else {
                 iterations_without_improvement++;
             }
 
             if (iterations_without_improvement >= p_.stagnation_limit && countries_.size() > 1) {
-                trace_json("restart_stagnant_begin", "\"country_count\":" + std::to_string(countries_.size()) +
-                           ",\"fraction\":" + std::to_string(p_.restart_country_frac));
                 restart_stagnant_countries(p_.restart_country_frac);
-                trace_json("restart_stagnant_end", "\"country_count\":" + std::to_string(countries_.size()));
                 iterations_without_improvement = 0;
             }
 
@@ -2275,8 +2169,6 @@ public:
         }
 
         print_eigen_local_stats();
-        trace_json("run_end", "\"reason\":\"loop_end\",\"best_f\":" + std::to_string(best_f) + ",\"best_x\":" + trace_vec(best_x));
-        if (p_.trace_logger) { trace_logger_instance.close(); ico_trace_logger = nullptr; }
         return {best_x, best_f, iteration};
     }
 
@@ -2285,7 +2177,10 @@ private:
     Params p_;
     std::shared_ptr<long> calls_count_;
     std::vector<std::unique_ptr<Country>> countries_;
-    ActionAdaptation action_adapt_;
+    ActionAdaptation action_adapt_real_;
+    ActionAdaptation action_adapt_gray_;
+    AdaptiveOperatorPair real_operator_adapt_;
+    AdaptiveOperatorPair gray_operator_adapt_;
     size_t eigen_local_axis_cursor_ = 0;
     long eigen_local_calls_ = 0;
     long eigen_local_evaluations_ = 0;
