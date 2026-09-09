@@ -24,39 +24,39 @@ using namespace bench;
 using Vec = std::vector<double>;
 
 struct IcoSettings {
-    double p_min        = 0.023;
-    double p_max        = 1.8;
-    int    M            = 10;
-    int    N            = 11;
+    double p_min        = 6.81035e-05;
+    double p_max        = 1.41681;
+    int    M            = 5;
+    int    N            = 200;
     int    n_min        = 1;
     int    n_max        = 2;
     int    m_min        = 2;
     int    m_max        = 3;
-    int    k            = 8;
-    int    l            = 2;
-    double ep_elite     = 0.077;
-    double ep_dead      = 0.28;
+    int    k            = 10;
+    int    l            = 4;
+    double ep_elite     = 0.192889;
+    double ep_dead      = 0.204716;
     int    max_mutation = 10;
-    int    tmax         = 1200;
-    double gray_percent = 0.15;
-    double p_war      = 0.22;
-    double p_trade    = 0.45;
-    double p_motion   = 0.3;
-    double p_epidemic = 0.07;
-    double p_migration = 0.1;
-    double action_alpha         = 0.321974;
+    int    tmax         = 2200;
+    double gray_percent = 0.35;
+    double p_war        = 0.174599;
+    double p_trade      = 0.18145;
+    double p_motion     = 0.317617;
+    double p_epidemic   = 0.177915;
+    double p_migration  = 0.14842;
+    double action_alpha         = 0.0551293;
     double action_pmin          = 0.05;
-    double action_warmup_frac   = 0.00759028;
-    int stagnation_limit     = 17;
-    double restart_country_frac = 0.236802;
-    double migration_frac       = 0.212646;
+    double action_warmup_frac   = 0.12069;
+    int stagnation_limit     = 24;
+    double restart_country_frac = 0.146922;
+    double migration_frac       = 0.32868;
     double parent_rank_pressure = 3.0;
-    double real_blx_share_start   = 0.70;
-    double real_blx_share_end     = 0.30; // compatibility only; adaptive selection is used
+    double real_blx_share_start   = 0;//0.70;
+    double real_blx_share_end     = 0;//0.30; // compatibility only; adaptive selection is used
     double real_eigen_share_start = 0.00;
     double real_eigen_share_end   = 0.00;
-    double real_de_share_start    = 0.30;
-    double real_de_share_end      = 0.70; // compatibility only; adaptive selection is used
+    double real_de_share_start    = 1;//0.30;
+    double real_de_share_end      = 1;//0.70; // compatibility only; adaptive selection is used
     double de_f = 0.55;
     double de_cr = 0.90;
     double de_pbest_frac = 0.20;
@@ -73,8 +73,8 @@ struct IcoSettings {
     double operator_alpha = 0.10;
     double operator_pmin = 0.05;
     bool population_reduction = true;
-    int min_country_size = 4;
-    int min_countries = 2;
+    int min_country_size = 20;
+    int min_countries = 1;
     double gray_uniform_share_start   = 0.50;
     double gray_uniform_share_end     = 0.50;
     double gray_two_point_share_start = 0.50;
@@ -286,61 +286,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const int iterations = 3; // число независимых прогонов на каждую функцию
+    const int iterations = 20; // число независимых прогонов на каждую функцию
 
     // Официальный протокол CEC2017: max_evals = 10000 * dim.
     std::optional<long> max_calls = 10000L * dim;
 
     IcoSettings s;
-
-
-s.p_min        = 6.81035e-05;
-s.p_max        = 1.41681;
-s.M            = 10;
-s.N            = 10;
-s.n_min        = 1;
-s.n_max        = 2;
-s.m_min        = 2;
-s.m_max        = 3;
-s.k            = 10;
-s.l            = 4;
-s.ep_elite     = 0.192889;
-s.ep_dead      = 0.204716;
-s.max_mutation = 10;
-s.gray_percent = 0.35;
-/*
-s.gray_percent = 0.773545;
-//s.real_blx_share_start   = 0.868416;
-//s.real_blx_share_end     = 0.941535;
-//s.real_eigen_share_start = 0.131584;
-//s.real_eigen_share_end   = 0.0584651;
-s.real_blx_share_start   = 0.35;
-s.real_blx_share_end     = 0.15;
-    s.real_eigen_share_start = 0.35;
-    s.real_eigen_share_end   = 0.15;
-    s.real_de_share_start    = 0.30;
-    s.real_de_share_end      = 0.70;
-
-s.gray_uniform_share_start   = 0.461211;
-s.gray_uniform_share_end     = 0.0796675;
-s.gray_two_point_share_start = 0.0921363;
-s.gray_two_point_share_end   = 0.689922;
-s.gray_eigen_share_start     = 0.446653;
-s.gray_eigen_share_end       = 0.230411;
-s.eigen_ps                   = 0.0750305;
-*/
-s.p_motion     = 0.317617;
-s.p_trade      = 0.18145;
-s.p_war        = 0.174599;
-s.p_epidemic   = 0.177915;
-s.p_migration  = 0.14842;
-
-s.action_alpha         = 0.0551293;
-s.action_pmin          = 0.05;
-s.action_warmup_frac   = 0.12069;
-s.stagnation_limit     = 24;
-s.restart_country_frac = 0.146922;
-s.migration_frac       = 0.32868;
 
     s.genes = std::vector<int>(dim, 32);
 
