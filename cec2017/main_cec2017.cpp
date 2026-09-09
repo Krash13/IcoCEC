@@ -38,12 +38,12 @@ struct IcoSettings {
     double ep_dead      = 0.204716;
     int    max_mutation = 10;
     int    tmax         = 2200;
-    double gray_percent = 0.35;
-    double p_war        = 0.174599;
-    double p_trade      = 0.18145;
-    double p_motion     = 0.317617;
+    double gray_percent = 0.0;
+    double p_war        = 0;//0.174599;
+    double p_trade      = 0;//0.18145;
+    double p_motion     = 0;//0.317617;
     double p_epidemic   = 0.177915;
-    double p_migration  = 0.14842;
+    double p_migration  = 0;//0.14842;
     double action_alpha         = 0.0551293;
     double action_pmin          = 0.05;
     double action_warmup_frac   = 0.12069;
@@ -62,9 +62,9 @@ struct IcoSettings {
     double de_pbest_frac = 0.20;
     double de_pool_frac = 0.60;
     double de_pool_frac_end = 0.40;
-    double de_exploitation_start_frac = 0.18;
-    double de_exploit_share_start = 0.45;
-    double de_exploit_share_end = 0.85;
+    double de_exploitation_start_frac = 1;//0.00;
+    double de_exploit_share_start = 1;//0.45;
+    double de_exploit_share_end = 1;//0.85;
     bool de_adaptive = true;
     int de_memory_size = 5;
     double de_f_sigma = 0.10;
@@ -298,6 +298,10 @@ int main(int argc, char** argv) {
     std::cout << "=== CEC2017 benchmark, dim=" << dim
               << ", max_calls=" << *max_calls
               << ", iterations=" << iterations << " ===" << std::endl;
+
+    double mean_percent = 0.0;
+    int num_funcs = 0;
+
     for (const auto& entry : cec2017::all_functions()) {
         // F2 исторически исключена из официального сравнения CEC2017
         // (несогласованность реализаций между платформами) — раскомментируйте,
@@ -311,11 +315,15 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        if ((entry.id != 1) && (entry.id != 3))
+        if ((entry.id != 1) && (entry.id != 3) && (entry.id != 6) && (entry.id != 11))
             continue;
-
-        run_one_cec(entry.id, entry.name, entry.func, dim, s, iterations, 42, max_calls);
+        auto result = run_one_cec(entry.id, entry.name, entry.func, dim, s, iterations, 42, max_calls);
+        mean_percent += result.success_percent;
+        num_funcs++;
+        //mean_avg = result.avg_function - cec2017::optimum_value(entry.id);
     }
+    mean_percent/=num_funcs;
+    std::cout << "Mean success rate: " << mean_percent << std::endl;
 
     return 0;
 }

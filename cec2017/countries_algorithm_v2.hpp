@@ -1835,8 +1835,9 @@ public:
                 split_single_country();
             }
 
+            const double ICO_actions_threshold = 0.0* (1.0 - progress);
             bool apply_ICO_actions = false;
-            if (apply_ICO_actions)
+            if ((rand_uniform(0.0, 1.0) < ICO_actions_threshold) && (progress < 0.18))//(apply_ICO_actions)
             {
                 // 4. Select one country action for every country that is free this round.
                 std::vector<Country*> ptrs;
