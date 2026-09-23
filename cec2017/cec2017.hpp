@@ -57,8 +57,8 @@ inline double eval(const Vec& x, int funcid) {
 }
 } // namespace detail
 
-// Функции-обёртки f1..f30 с сигнатурой double(const Vec&),
-// совместимой с CountedFunction<double(*)(const Vec&)> из benchmark.hpp.
+// All f1..f30 wrappers have the same signature: double(const Vec&).
+// The original C function takes raw arrays; detail::eval adapts that API.
 inline double f1(const Vec& x)  { return detail::eval(x, 1); }
 inline double f2(const Vec& x)  { return detail::eval(x, 2); }  // исключена из офиц. набора
 inline double f3(const Vec& x)  { return detail::eval(x, 3); }
