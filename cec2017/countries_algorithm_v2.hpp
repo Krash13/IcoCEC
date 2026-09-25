@@ -5,9 +5,6 @@
 
 #pragma once
 
-#include <Eigen/Dense>
-#include <Eigen/Eigenvalues>
-
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -527,44 +524,42 @@ struct RealIndividual : Individual {
 
     /** @brief Create a real-valued child with BLX-alpha crossover. */
     static std::shared_ptr<RealIndividual> crossover(
-        const RealIndividual& a, const RealIndividual& b,
-        double alpha,
-        const std::vector<double>& x_min,
-        const std::vector<double>& x_max,
-        const FuncT& func) {
-        const Eigen::Index dim = static_cast<Eigen::Index>(a.x.size());
-        Eigen::Map<const Eigen::ArrayXd> ax(a.x.data(), dim);
-        Eigen::Map<const Eigen::ArrayXd> bx(b.x.data(), dim);
-        Eigen::Map<const Eigen::ArrayXd> min_x(x_min.data(), dim);
-        Eigen::Map<const Eigen::ArrayXd> max_x(x_max.data(), dim);
+    const RealIndividual& a, const RealIndividual& b,
+    double alpha,
+    const std::vector<double>& x_min,
+    const std::vector<double>& x_max,
+    const FuncT& func) {
 
-        // For each coordinate i, we find the min and max value for two parents.
-        // lo[i] = min(ax[i], bx[i]), hi[i] = max(ax[i], bx[i]).
-        const Eigen::ArrayXd lo = ax.min(bx);
-        const Eigen::ArrayXd hi = ax.max(bx);
-        // The interval between two parents in each dimension.
-        const Eigen::ArrayXd interval = hi - lo;
-        // expand this interval by a factor α.
-        // lower[i] = lo[i] - α * interval[i], upper[i] = hi[i] + α * interval[i]
-        // When α is 0, the child is sampled from [lo, hi]
-        const Eigen::ArrayXd lower = lo - alpha * interval;
-        const Eigen::ArrayXd upper = hi + alpha * interval;
+        int dim = a.x.size();
+        std::vector<double> child_x(dim);
+        for (int i = 0; i < dim; ++i) {
+        const double lower_parent = std::min(a.x[i], b.x[i]);
+        const double upper_parent = std::max(a.x[i], b.x[i]);
+        const double interval = upper_parent - lower_parent;
 
-        Eigen::ArrayXd u(dim);
-        for (Eigen::Index i = 0; i < dim; ++i) {
-            u(i) = rand_uniform(0.0, 1.0);
-        }
+        const double lower =
+            lower_parent - alpha * interval;
 
-        // Sample the child vector from the expanded interval
-        // and clamp all the coordinates to the allowed search boundaries
-        Eigen::ArrayXd child = lower + u * (upper - lower);
-        child = child.max(min_x).min(max_x);
+        const double upper =
+            upper_parent + alpha * interval;
 
-        std::vector<double> new_x(child.data(), child.data() + child.size());
-        return std::make_shared<RealIndividual>(std::move(new_x), x_min, x_max, func);
+        child_x[i] = rand_uniform(lower, upper);
+        child_x[i] = std::clamp(
+            child_x[i],
+            x_min[i],
+            x_max[i]
+        );
     }
 
-    static std::shared_ptr<RealIndividual> eigen_crossover(
+    return std::make_shared<RealIndividual>(
+        std::move(child_x),
+        x_min,
+        x_max,
+        func
+    );
+    }
+
+    /*static std::shared_ptr<RealIndividual> eigen_crossover(
         const RealIndividual& a, const RealIndividual& b,
         const Eigen::MatrixXd* eigen_basis,
         const std::vector<double>& x_min,
@@ -611,25 +606,7 @@ struct RealIndividual : Individual {
         for (int j = 0; j < dim; ++j) {
             const double alpha = rand_uniform(0.0, 1.0);
             child_z[j] = za[j] + alpha * (zb[j] - za[j]);
-        }
-
-        // Previous binomial Eigen crossover is kept commented for A/B experiments.
-        // Helper:
-        // auto binomial_eigen_crossover = [&](Eigen::VectorXd& result_z,
-        //                                      const Eigen::VectorXd& other_z,
-        //                                      double cr) {
-        //     const int j_rand = rand_int(0, dim - 1);
-        //     for (int j = 0; j < dim; ++j) {
-        //         if (j == j_rand || rand_uniform(0.0, 1.0) <= cr) {
-        //             result_z[j] = other_z[j];
-        //         }
-        //     }
-        // };
-        //
-        // Call (instead of the arithmetic loop above):
-        // const double real_eigen_cr = 0.80;
-        // child_z = za;
-        // binomial_eigen_crossover(child_z, zb, real_eigen_cr);
+        }        
 
         Eigen::VectorXd child = use_eigen ? (*eigen_basis) * child_z : child_z;
 
@@ -649,7 +626,7 @@ struct RealIndividual : Individual {
         }
 
         return std::make_shared<RealIndividual>(std::move(new_x), x_min, x_max, func);
-    }
+    }*/
 };
 
 // ============================================================================
@@ -896,7 +873,7 @@ struct Country {
         double p_min, double p_max,
         double f_min, double f_max,
         int iteration, int t_max,
-        const Eigen::MatrixXd* eigen_basis,
+        //const Eigen::MatrixXd* eigen_basis,
         double real_blx_share,
         double real_eigen_share,
         double real_de_share,
@@ -1612,6 +1589,9 @@ public:
         double restart_country_frac = 0.15; // Worst-country fraction to rebuild. ///< Fraction of worst countries rebuilt after stagnation.
         double migration_frac       = 0.30; // Individuals replaced during migration. ///< Fraction of a country replaced during migration.
 
+        // Optional initial solution.
+        // An empty vector means that the whole population is generated randomly.
+        std::vector<double> initial_x;
     };
 
     struct ActionAdaptation {
@@ -1766,6 +1746,76 @@ public:
                 params.N, params.x_min, params.x_max, func, IndividualType::Real, params.genes
             ));
         }
+
+        // add previous solution
+
+        // Add the user-supplied initial solution to the population.
+        if (!params.initial_x.empty()) {
+            if (params.initial_x.size() != params.x_min.size()) {
+                throw std::invalid_argument(
+                    "initial_x dimension does not match x_min/x_max"
+                );
+            }
+
+            if (countries.empty()) {
+                throw std::runtime_error(
+                    "Cannot add initial_x: no countries were created"
+                );
+            }
+
+            // Keep the initial point inside the search bounds.
+            Vec initial_x = params.initial_x;
+
+            for (std::size_t i = 0; i < initial_x.size(); ++i) {
+                initial_x[i] = std::clamp(
+                    initial_x[i],
+                    params.x_min[i],
+                    params.x_max[i]
+                );
+            }
+
+            // Prefer a real-valued country because it stores the initial point
+            // without Gray-code quantization.
+            auto target_country = std::find_if(
+                countries.begin(),
+                countries.end(),
+                [](const std::unique_ptr<Country>& country) {
+                    return country->itype == IndividualType::Real;
+                }
+            );
+
+            // If all countries use Gray code, use the first one.
+            if (target_country == countries.end()) {
+                target_country = countries.begin();
+            }
+
+            std::shared_ptr<Individual> initial_individual;
+
+            if ((*target_country)->itype == IndividualType::Real) {
+                initial_individual =
+                    std::make_shared<RealIndividual>(
+                        initial_x,
+                        params.x_min,
+                        params.x_max,
+                        func
+                    );
+            } else {
+                initial_individual =
+                    GrayIndividual::from_real(
+                        initial_x,
+                        params.x_min,
+                        params.x_max,
+                        params.genes,
+                        func
+                    );
+            }
+
+            // Replace the worst random individual, keeping population size unchanged.
+            (*target_country)->population.back() =
+                std::move(initial_individual);
+
+            (*target_country)->sort_population();
+        }
     }
 
     /** @brief Run the Countries Algorithm until the FE limit, iteration limit, or known target value is reached. */
@@ -1781,7 +1831,7 @@ public:
         double best_f = std::numeric_limits<double>::infinity();
         long iteration = 0;
 
-        reset_eigen_local_stats();
+        //reset_eigen_local_stats();
 
         if (!countries.empty() && !countries[0]->population.empty()) {
             best_x = countries[0]->population[0]->real_x();
@@ -1802,7 +1852,7 @@ public:
             if (max_calls.has_value()) {
                 if (*calls_count >= max_calls.value()) {
                     if (params.printing) std::cout << "Max calls reached: " << *calls_count << std::endl;
-                    print_eigen_local_stats();
+                    //print_eigen_local_stats();
                     return {best_x, best_f, iteration};
                 }
             } else if (iteration > params.tmax) {
@@ -1965,9 +2015,9 @@ public:
                 ? gray_operator_adapt.probs[1] : 0.50;
             const double gray_eigen_share = 0.0;
 
-            Eigen::MatrixXd eigen_basis;
-            Eigen::VectorXd eigen_values;
-            const Eigen::MatrixXd* eigen_basis_ptr = nullptr;
+            //Eigen::MatrixXd eigen_basis;
+            //Eigen::VectorXd eigen_values;
+            //const Eigen::MatrixXd* eigen_basis_ptr = nullptr;
 
             // 9. Reproduce stronger countries, remove weak residents, and keep single survivors.
             std::vector<std::shared_ptr<Individual>> e_individuals;
@@ -1985,7 +2035,7 @@ public:
                     f_max,
                     schedule_iteration,
                     params.tmax,
-                    eigen_basis_ptr,
+                    //eigen_basis_ptr,
                     real_blx_share,
                     real_eigen_share,
                     real_de_share,
@@ -2077,13 +2127,13 @@ public:
                         std::cout << "Target objective reached: error=" << objective_error
                                   << ", calls=" << *calls_count << std::endl;
                     }
-                    print_eigen_local_stats();
+                    //print_eigen_local_stats();
                     return {best_x, best_f, iteration};
                 }
             }
         }
 
-        print_eigen_local_stats();
+        //print_eigen_local_stats();
         return {best_x, best_f, iteration};
     }
 
@@ -2096,7 +2146,7 @@ private:
     ActionAdaptation action_adapt_gray; ///< Action rewards and probabilities for Gray-code countries.
     AdaptiveOperatorPair real_operator_adapt; ///< Adaptive choice between BLX and DE for real-valued reproduction.
     AdaptiveOperatorPair gray_operator_adapt; ///< Adaptive choice between uniform and two-point Gray crossover.
-    size_t eigen_local_axis_cursor = 0; ///< Next Eigen axis used by the disabled local-search statistics code.
+    /*size_t eigen_local_axis_cursor = 0; ///< Next Eigen axis used by the disabled local-search statistics code.
     long eigen_local_calls = 0; ///< Number of local-search calls.
     long eigen_local_evaluations = 0; ///< Number of objective evaluations used by local search.
     long eigen_local_axes_tested = 0; ///< Number of Eigen axes tested by local search.
@@ -2107,8 +2157,9 @@ private:
     double eigen_local_best_after = std::numeric_limits<double>::infinity(); ///< Best value after local-search measurements.
     double eigen_local_total_improvement = 0.0; ///< Total improvement produced by measured local-search moves.
     double eigen_local_max_improvement = 0.0; ///< Largest improvement produced by one measured local-search move.
-
+    */
     /** @brief Reset counters used by the disabled Eigen local-search diagnostics. */
+    /*
     void reset_eigen_local_stats() {
         eigen_local_axis_cursor = 0;
         eigen_local_calls = 0;
@@ -2122,8 +2173,10 @@ private:
         eigen_local_total_improvement = 0.0;
         eigen_local_max_improvement = 0.0;
     }
+        */
 
     /** @brief Print Eigen local-search diagnostics when that output is enabled. */
+    /*
     void print_eigen_local_stats() const {
         if (!params.eigen_local_stats) return;
 
@@ -2146,7 +2199,7 @@ private:
                   << ", total_improvement=" << eigen_local_total_improvement
                   << ", max_improvement=" << eigen_local_max_improvement
                   << "}" << std::endl;
-    }
+    }*/
 
     /** @brief Reduce country count gradually when population reduction is enabled. */
     void reduce_country_count(double progress, int country_size_limit) {
