@@ -558,75 +558,6 @@ struct RealIndividual : Individual {
         func
     );
     }
-
-    /*static std::shared_ptr<RealIndividual> eigen_crossover(
-        const RealIndividual& a, const RealIndividual& b,
-        const Eigen::MatrixXd* eigen_basis,
-        const std::vector<double>& x_min,
-        const std::vector<double>& x_max,
-        const FuncT& func) {
-        const int dim = static_cast<int>(a.x.size());
-        assert(dim == static_cast<int>(b.x.size()));
-
-        Eigen::VectorXd ax(dim);
-        Eigen::VectorXd bx(dim);
-
-        // Use the same normalized coordinate system as the covariance matrix.
-        for (int d = 0; d < dim; ++d) {
-            const double range = x_max[d] - x_min[d];
-            if (range > 0.0) {
-                ax[d] = (a.x[d] - x_min[d]) / range;
-                bx[d] = (b.x[d] - x_min[d]) / range;
-            } else {
-                ax[d] = 0.0;
-                bx[d] = 0.0;
-            }
-        }
-
-        const bool use_eigen =
-            eigen_basis != nullptr &&
-            eigen_basis->rows() == dim &&
-            eigen_basis->cols() == dim &&
-            eigen_basis->allFinite();
-
-        Eigen::VectorXd za;
-        Eigen::VectorXd zb;
-
-        if (use_eigen) {
-            za = eigen_basis->transpose() * ax;
-            zb = eigen_basis->transpose() * bx;
-        } else {
-            za = ax;
-            zb = bx;
-        }
-
-        Eigen::VectorXd child_z = za;
-
-        // Arithmetic crossover along independently selected Eigen directions.
-        for (int j = 0; j < dim; ++j) {
-            const double alpha = rand_uniform(0.0, 1.0);
-            child_z[j] = za[j] + alpha * (zb[j] - za[j]);
-        }        
-
-        Eigen::VectorXd child = use_eigen ? (*eigen_basis) * child_z : child_z;
-
-        // Repair toward the first parent instead of hard clipping.
-        for (int d = 0; d < dim; ++d) {
-            if (child[d] < 0.0) {
-                child[d] = 0.5 * ax[d];
-            } else if (child[d] > 1.0) {
-                child[d] = 0.5 * (ax[d] + 1.0);
-            }
-        }
-
-        std::vector<double> new_x(dim);
-        for (int d = 0; d < dim; ++d) {
-            const double range = x_max[d] - x_min[d];
-            new_x[d] = x_min[d] + std::clamp(child[d], 0.0, 1.0) * range;
-        }
-
-        return std::make_shared<RealIndividual>(std::move(new_x), x_min, x_max, func);
-    }*/
 };
 
 // ============================================================================
@@ -873,9 +804,7 @@ struct Country {
         double p_min, double p_max,
         double f_min, double f_max,
         int iteration, int t_max,
-        //const Eigen::MatrixXd* eigen_basis,
         double real_blx_share,
-        double real_eigen_share,
         double real_de_share,
         double de_f,
         double de_cr,
@@ -887,7 +816,6 @@ struct Country {
         double de_cr_sigma,
         double gray_uniform_share,
         double gray_two_point_share,
-        double gray_eigen_share,
         double parent_rank_pressure,
         AdaptiveOperatorPair* real_operator_adapt,
         AdaptiveOperatorPair* gray_operator_adapt,
@@ -920,20 +848,17 @@ struct Country {
             if (gray_operator_adapt != nullptr) {
                 gray_uniform_share = gray_operator_adapt->probs[0];
                 gray_two_point_share = gray_operator_adapt->probs[1];
-                gray_eigen_share = 0.0;
             }
             gray_uniform_share = std::max(0.0, gray_uniform_share);
             gray_two_point_share = std::max(0.0, gray_two_point_share);
-            gray_eigen_share = std::max(0.0, gray_eigen_share);
-            double crossover_share_sum = gray_uniform_share + gray_two_point_share + gray_eigen_share;
+            double crossover_share_sum = gray_uniform_share + gray_two_point_share;
             const int gray_elite_count = std::clamp(
                 static_cast<int>(std::ceil(0.20 * parent_count)), 1, parent_count);
             const double gray_elite_threshold = population[gray_elite_count - 1]->f_value;
 
             if (crossover_share_sum <= 0.0) {
-                gray_uniform_share = 0.05;
-                gray_two_point_share = 0.05;
-                gray_eigen_share = 0.90;
+                gray_uniform_share = 0.65;
+                gray_two_point_share = 0.35;
                 crossover_share_sum = 1.0;
             }
 
@@ -957,7 +882,6 @@ struct Country {
                     children = GrayIndividual::crossover(*a, *b, false, f);
                     operator_idx = 1;
                 } else {
-                    // Eigen crossover is disabled in the clean DE branch.
                     children = GrayIndividual::crossover(*a, *b, false, f);
                     operator_idx = 1;
                 }
@@ -986,18 +910,15 @@ struct Country {
 
             if (real_operator_adapt != nullptr) {
                 real_blx_share = real_operator_adapt->probs[0];
-                real_eigen_share = 0.0;
                 real_de_share = real_operator_adapt->probs[1];
             }
             real_blx_share = std::max(0.0, real_blx_share);
-            real_eigen_share = std::max(0.0, real_eigen_share);
             real_de_share = std::max(0.0, real_de_share);
-            double crossover_share_sum = real_blx_share + real_eigen_share + real_de_share;
+            double crossover_share_sum = real_blx_share + real_de_share;
 
             if (crossover_share_sum <= 0.0) {
                 real_blx_share = 0.35;
-                real_eigen_share = 0.35;
-                real_de_share = 0.30;
+                real_de_share = 0.65;
                 crossover_share_sum = 1.0;
             }
 
@@ -1027,7 +948,7 @@ struct Country {
             for (int i = 0; i < 2 * n; ++i) {
                 const double crossover_choice = rand_uniform(0.0, crossover_share_sum);
 
-                if (crossover_choice >= real_blx_share + real_eigen_share && parent_count >= 4) {
+                if (crossover_choice >= real_blx_share && parent_count >= 4) {
                     // L-SRTDE/RDEx-style current-to-pbest/1. The target and
                     // second differential donor remain uniform, while r1 is
                     // rank-biased and pbest comes from the elite prefix.
@@ -1504,8 +1425,6 @@ public:
         // start to end according to FEs / MaxFEs and normalized when selected.
         double real_blx_share_start   = 0.70; ///< Initial probability share of BLX crossover.
         double real_blx_share_end     = 0.30; ///< Final probability share of BLX crossover.
-        double real_eigen_share_start = 0.00; ///< Initial Eigen crossover share; kept at zero in the clean version.
-        double real_eigen_share_end   = 0.00; ///< Final Eigen crossover share; kept at zero in the clean version.
         double real_de_share_start    = 0.30; ///< Initial DE reproduction share.
         double real_de_share_end      = 0.70; ///< Final DE reproduction share.
 
@@ -1534,31 +1453,6 @@ public:
         double gray_uniform_share_end     = 0.50; ///< Final share of uniform Gray crossover.
         double gray_two_point_share_start = 0.50; ///< Initial share of two-point Gray crossover.
         double gray_two_point_share_end   = 0.50; ///< Final share of two-point Gray crossover.
-        double gray_eigen_share_start     = 0.00; ///< Initial Gray Eigen share; kept at zero in the clean version.
-        double gray_eigen_share_end       = 0.00; ///< Final Gray Eigen share; kept at zero in the clean version.
-
-        // Fraction of the best population used to estimate the Eigen basis.
-        double eigen_ps = 0.50; ///< Best-population fraction formerly used to build an Eigen basis.
-
-        // Late Eigen-guided local search around the current global best.
-        // Sigma is expressed in normalized [0,1] coordinates and decreases
-        // geometrically after eigen_local_search_start_frac of the FE budget.
-        bool   eigen_local_search            = false; ///< Enable the old Eigen local search; disabled in the clean version.
-        double eigen_local_search_start_frac = 0.50; ///< FE fraction at which old Eigen local search would start.
-        double eigen_local_sigma_start       = 0.02; ///< Initial normalized step of old Eigen local search.
-        double eigen_local_sigma_end         = 1e-8; ///< Final normalized step of old Eigen local search.
-        double eigen_min_axis_scale          = 1e-3; ///< Minimum relative Eigen-axis scale in the old local search.
-        int    eigen_local_trials            = 2; ///< Number of trials made by the old Eigen local search.
-        bool   eigen_local_stats             = false; ///< Print statistics for the old Eigen local search.
-
-        // Legacy Eigen parameters from the previous binomial implementation.
-        // They are intentionally kept commented out: gray_eigen_prob is replaced
-        // by gray_eigen_share_start/end, gray_eigen_cr is not used by arithmetic
-        // Eigen crossover, and gray_eigen_ps is replaced by the common eigen_ps
-        // used by both Gray and Real individuals.
-        // double gray_eigen_prob = 0.10;
-        // double gray_eigen_cr   = 0.80;
-        // double gray_eigen_ps   = 0.50;
 
         /// Known best objective value for benchmarks such as CEC2017.
         /// Leave empty for ordinary problems where this value is not known.
@@ -1652,47 +1546,41 @@ public:
         // Crossover shares are probabilities. Normalize start/end separately so
         // each group sums to 1; then linear interpolation preserves sum == 1
         // for every FEs / MaxFEs value.
-        auto normalize_real_shares = [](double& blx, double& eigen, double& de,
-                                        double fallback_blx, double fallback_eigen, double fallback_de) {
+        auto normalize_real_shares = [](double& blx, double& de,
+                                        double fallback_blx, double fallback_de) {
             blx = std::max(0.0, blx);
-            eigen = std::max(0.0, eigen);
             de = std::max(0.0, de);
-            const double sum = blx + eigen + de;
+            const double sum = blx + de;
             if (sum <= 1e-15) {
                 blx = fallback_blx;
-                eigen = fallback_eigen;
                 de = fallback_de;
                 return;
             }
             blx /= sum;
-            eigen /= sum;
             de /= sum;
         };
 
-        auto normalize_gray_shares = [](double& uniform, double& two_point, double& eigen) {
+        auto normalize_gray_shares = [](double& uniform, double& two_point) {
             uniform = std::max(0.0, uniform);
             two_point = std::max(0.0, two_point);
-            eigen = std::max(0.0, eigen);
-            const double sum = uniform + two_point + eigen;
+            const double sum = uniform + two_point;
             if (sum <= 1e-15) {
                 uniform = 0.05;
                 two_point = 0.05;
-                eigen = 0.90;
                 return;
             }
             uniform /= sum;
             two_point /= sum;
-            eigen /= sum;
         };
 
         normalize_real_shares(
-            params.real_blx_share_start, params.real_eigen_share_start, params.real_de_share_start,
-            0.35, 0.35, 0.30);
+            params.real_blx_share_start, params.real_de_share_start,
+            0.35, 0.65);
         normalize_real_shares(
-            params.real_blx_share_end, params.real_eigen_share_end, params.real_de_share_end,
-            0.15, 0.15, 0.70);
-        normalize_gray_shares(params.gray_uniform_share_start, params.gray_two_point_share_start, params.gray_eigen_share_start);
-        normalize_gray_shares(params.gray_uniform_share_end,   params.gray_two_point_share_end,   params.gray_eigen_share_end);
+            params.real_blx_share_end, params.real_de_share_end,
+            0.15, 0.85);
+        normalize_gray_shares(params.gray_uniform_share_start, params.gray_two_point_share_start);
+        normalize_gray_shares(params.gray_uniform_share_end,   params.gray_two_point_share_end);
 
         double sum_p = params.p_motion + params.p_trade + params.p_war + params.p_epidemic + params.p_migration;
         // Accept approximately normalized input and repair small/user-supplied
@@ -1831,8 +1719,6 @@ public:
         double best_f = std::numeric_limits<double>::infinity();
         long iteration = 0;
 
-        //reset_eigen_local_stats();
-
         if (!countries.empty() && !countries[0]->population.empty()) {
             best_x = countries[0]->population[0]->real_x();
             best_f = countries[0]->population[0]->f_value;
@@ -1852,7 +1738,6 @@ public:
             if (max_calls.has_value()) {
                 if (*calls_count >= max_calls.value()) {
                     if (params.printing) std::cout << "Max calls reached: " << *calls_count << std::endl;
-                    //print_eigen_local_stats();
                     return {best_x, best_f, iteration};
                 }
             } else if (iteration > params.tmax) {
@@ -2006,18 +1891,12 @@ public:
             }
             const double real_blx_share = params.adaptive_reproduction_operators
                 ? real_operator_adapt.probs[0] : (1.0 - de_probability_floor);
-            const double real_eigen_share = 0.0;
             const double real_de_share = params.adaptive_reproduction_operators
                 ? real_operator_adapt.probs[1] : de_probability_floor;
             const double gray_uniform_share = params.adaptive_reproduction_operators
                 ? gray_operator_adapt.probs[0] : 0.50;
             const double gray_two_point_share = params.adaptive_reproduction_operators
                 ? gray_operator_adapt.probs[1] : 0.50;
-            const double gray_eigen_share = 0.0;
-
-            //Eigen::MatrixXd eigen_basis;
-            //Eigen::VectorXd eigen_values;
-            //const Eigen::MatrixXd* eigen_basis_ptr = nullptr;
 
             // 9. Reproduce stronger countries, remove weak residents, and keep single survivors.
             std::vector<std::shared_ptr<Individual>> e_individuals;
@@ -2035,9 +1914,7 @@ public:
                     f_max,
                     schedule_iteration,
                     params.tmax,
-                    //eigen_basis_ptr,
                     real_blx_share,
-                    real_eigen_share,
                     real_de_share,
                     params.de_f,
                     params.de_cr,
@@ -2049,7 +1926,6 @@ public:
                     params.de_cr_sigma,
                     gray_uniform_share,
                     gray_two_point_share,
-                    gray_eigen_share,
                     params.parent_rank_pressure,
                     params.adaptive_reproduction_operators ? &real_operator_adapt : nullptr,
                     params.adaptive_reproduction_operators ? &gray_operator_adapt : nullptr,
@@ -2127,13 +2003,11 @@ public:
                         std::cout << "Target objective reached: error=" << objective_error
                                   << ", calls=" << *calls_count << std::endl;
                     }
-                    //print_eigen_local_stats();
                     return {best_x, best_f, iteration};
                 }
             }
         }
 
-        //print_eigen_local_stats();
         return {best_x, best_f, iteration};
     }
 
@@ -2146,60 +2020,6 @@ private:
     ActionAdaptation action_adapt_gray; ///< Action rewards and probabilities for Gray-code countries.
     AdaptiveOperatorPair real_operator_adapt; ///< Adaptive choice between BLX and DE for real-valued reproduction.
     AdaptiveOperatorPair gray_operator_adapt; ///< Adaptive choice between uniform and two-point Gray crossover.
-    /*size_t eigen_local_axis_cursor = 0; ///< Next Eigen axis used by the disabled local-search statistics code.
-    long eigen_local_calls = 0; ///< Number of local-search calls.
-    long eigen_local_evaluations = 0; ///< Number of objective evaluations used by local search.
-    long eigen_local_axes_tested = 0; ///< Number of Eigen axes tested by local search.
-    long eigen_local_accepted = 0; ///< Number of accepted local-search moves.
-    long eigen_local_plus_accepted = 0; ///< Accepted moves in the positive axis direction.
-    long eigen_local_minus_accepted = 0; ///< Accepted moves in the negative axis direction.
-    double eigen_local_best_before = std::numeric_limits<double>::infinity(); ///< Best value before local-search measurements.
-    double eigen_local_best_after = std::numeric_limits<double>::infinity(); ///< Best value after local-search measurements.
-    double eigen_local_total_improvement = 0.0; ///< Total improvement produced by measured local-search moves.
-    double eigen_local_max_improvement = 0.0; ///< Largest improvement produced by one measured local-search move.
-    */
-    /** @brief Reset counters used by the disabled Eigen local-search diagnostics. */
-    /*
-    void reset_eigen_local_stats() {
-        eigen_local_axis_cursor = 0;
-        eigen_local_calls = 0;
-        eigen_local_evaluations = 0;
-        eigen_local_axes_tested = 0;
-        eigen_local_accepted = 0;
-        eigen_local_plus_accepted = 0;
-        eigen_local_minus_accepted = 0;
-        eigen_local_best_before = std::numeric_limits<double>::infinity();
-        eigen_local_best_after = std::numeric_limits<double>::infinity();
-        eigen_local_total_improvement = 0.0;
-        eigen_local_max_improvement = 0.0;
-    }
-        */
-
-    /** @brief Print Eigen local-search diagnostics when that output is enabled. */
-    /*
-    void print_eigen_local_stats() const {
-        if (!params.eigen_local_stats) return;
-
-        const double acceptance_rate =
-            (eigen_local_axes_tested > 0)
-                ? 100.0 * static_cast<double>(eigen_local_accepted) /
-                    static_cast<double>(eigen_local_axes_tested)
-                : 0.0;
-
-        std::cout << "  Eigen local stats: {"
-                  << "calls=" << eigen_local_calls
-                  << ", evaluations=" << eigen_local_evaluations
-                  << ", axes_tested=" << eigen_local_axes_tested
-                  << ", accepted=" << eigen_local_accepted
-                  << ", acceptance_percent=" << acceptance_rate
-                  << ", plus_accepted=" << eigen_local_plus_accepted
-                  << ", minus_accepted=" << eigen_local_minus_accepted
-                  << ", best_before=" << eigen_local_best_before
-                  << ", best_after=" << eigen_local_best_after
-                  << ", total_improvement=" << eigen_local_total_improvement
-                  << ", max_improvement=" << eigen_local_max_improvement
-                  << "}" << std::endl;
-    }*/
 
     /** @brief Reduce country count gradually when population reduction is enabled. */
     void reduce_country_count(double progress, int country_size_limit) {

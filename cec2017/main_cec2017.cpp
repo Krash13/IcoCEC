@@ -44,8 +44,6 @@ static CountriesAlgorithm::Params experiment_params() {
     p.parent_rank_pressure = 3.0;
     p.real_blx_share_start = 0.0;
     p.real_blx_share_end = 0.0;
-    p.real_eigen_share_start = 0.0;
-    p.real_eigen_share_end = 0.0;
     p.real_de_share_start = 1.0;
     p.real_de_share_end = 1.0;
     p.de_f = 0.55;
@@ -70,16 +68,6 @@ static CountriesAlgorithm::Params experiment_params() {
     p.gray_uniform_share_end = 0.50;
     p.gray_two_point_share_start = 0.50;
     p.gray_two_point_share_end = 0.50;
-    p.gray_eigen_share_start = 0.0;
-    p.gray_eigen_share_end = 0.0;
-    p.eigen_ps = 0.50;
-    p.eigen_local_search = false;
-    p.eigen_local_search_start_frac = 0.50;
-    p.eigen_local_sigma_start = 0.02;
-    p.eigen_local_sigma_end = 1e-8;
-    p.eigen_min_axis_scale = 1e-3;
-    p.eigen_local_trials = 2;
-    p.eigen_local_stats = false;
     p.printing = false;
     return p;
 }
