@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(ico_cec2017 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -13,7 +13,7 @@ endif()
 set(CMAKE_C_FLAGS_RELEASE "-O2")
 set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+#find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
 add_compile_definitions(_USE_MATH_DEFINES)
 
@@ -28,12 +28,12 @@ add_executable(meta_optimization
 )
 
 target_link_libraries(ico_cec2017 PRIVATE
-        Eigen3::Eigen
+#        Eigen3::Eigen
         m
 )
 
 target_link_libraries(meta_optimization PRIVATE
-        Eigen3::Eigen
+#        Eigen3::Eigen
         m
 )
 
