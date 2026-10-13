@@ -1401,21 +1401,21 @@ public:
     struct Params {
         std::vector<double> x_min, x_max; ///< Lower and upper bounds of all coordinates.
         std::vector<int> genes; ///< Number of Gray-code bits used for each coordinate.
-        double p_min = 0.1; ///< Minimum BLX-alpha value used by real crossover.
-        double p_max = 0.5; ///< Maximum BLX-alpha value used by real crossover and real mutation.
-        int M = 10; ///< Initial number of countries.
-        int N = 20; ///< Initial number of individuals in each country.
+        double p_min = 6.81035e-05; ///< Minimum BLX-alpha value used by real crossover.
+        double p_max = 1.41681; ///< Maximum BLX-alpha value used by real crossover and real mutation.
+        int M = 5; ///< Initial number of countries.
+        int N = 200; ///< Initial number of individuals in each country.
         int n_min = 1; ///< Minimum reproduction amount for one country.
-        int n_max = 5; ///< Maximum reproduction amount for one country.
-        int m_min = 1; ///< Minimum number removed during extinction.
+        int n_max = 2; ///< Maximum reproduction amount for one country.
+        int m_min = 2; ///< Minimum number removed during extinction.
         int m_max = 3; ///< Maximum number removed during extinction.
-        int k = 3; ///< Number of individuals exchanged during trade.
-        int l = 3; ///< Number of duel pairs used during war.
-        double ep_elite = 0.2; ///< Best fraction protected during an epidemic.
-        double ep_dead = 0.3; ///< Worst fraction removed during an epidemic.
-        int max_mutation = 3; ///< Maximum number of Gray bits that an epidemic may flip.
-        int tmax = 1000; ///< Iteration scale used when no explicit FE budget is given.
-        double gray_percent = 0.5; ///< Fraction of initial countries that use Gray-code individuals.
+        int k = 10; ///< Number of individuals exchanged during trade.
+        int l = 4; ///< Number of duel pairs used during war.
+        double ep_elite = 0.192889; ///< Best fraction protected during an epidemic.
+        double ep_dead = 0.204716; ///< Worst fraction removed during an epidemic.
+        int max_mutation = 10; ///< Maximum number of Gray bits that an epidemic may flip.
+        int tmax = 2200; ///< Iteration scale used when no explicit FE budget is given.
+        double gray_percent = 0.0; ///< Fraction of initial countries that use Gray-code individuals.
 
         // Exponential rank-selection pressure for crossover parents.
         // 0 means uniform selection; values around 3 match L-SRTDE's donor bias.
@@ -1423,10 +1423,10 @@ public:
 
         // Crossover operator shares. Values are linearly interpolated from
         // start to end according to FEs / MaxFEs and normalized when selected.
-        double real_blx_share_start   = 0.70; ///< Initial probability share of BLX crossover.
-        double real_blx_share_end     = 0.30; ///< Final probability share of BLX crossover.
-        double real_de_share_start    = 0.30; ///< Initial DE reproduction share.
-        double real_de_share_end      = 0.70; ///< Final DE reproduction share.
+        double real_blx_share_start   = 0.0; ///< Initial probability share of BLX crossover.
+        double real_blx_share_end     = 0.0; ///< Final probability share of BLX crossover.
+        double real_de_share_start    = 1.0; ///< Initial DE reproduction share.
+        double real_de_share_end      = 1.0; ///< Final DE reproduction share.
 
         // Fixed DE controls used before success-history adaptation is enabled.
         double de_f = 0.55; ///< Default DE scale factor F.
@@ -1434,9 +1434,9 @@ public:
         double de_pbest_frac = 0.20; ///< Fraction of best DE candidates that may be chosen as pbest.
         double de_pool_frac = 0.60; ///< Initial fraction of the real population available to DE.
         double de_pool_frac_end = 0.40; ///< Final fraction of the real population available to DE.
-        double de_exploitation_start_frac = 0.18; ///< FE fraction after which DE receives a growing probability floor.
-        double de_exploit_share_start = 0.45; ///< DE probability floor when the exploitation phase begins.
-        double de_exploit_share_end = 0.85; ///< DE probability floor near the end of the FE budget.
+        double de_exploitation_start_frac = 1.0; ///< FE fraction after which DE receives a growing probability floor.
+        double de_exploit_share_start = 1.0; ///< DE probability floor when the exploitation phase begins.
+        double de_exploit_share_end = 1.0; ///< DE probability floor near the end of the FE budget.
         bool de_adaptive = true; ///< Enable success-history adaptation of F and CR.
         int de_memory_size = 5; ///< Number of successful F/CR records kept in DE memory.
         double de_f_sigma = 0.10; ///< Spread used when sampling a new F around its memory value.
@@ -1446,8 +1446,8 @@ public:
         // multi-country structure. Two countries are kept by default so both
         // encodings and country interactions can survive late in the run.
         bool population_reduction = true; ///< Enable gradual reduction of country and population sizes.
-        int min_country_size = 4; ///< Smallest country size allowed by population reduction.
-        int min_countries = 2; ///< Smallest number of countries allowed by population reduction.
+        int min_country_size = 20; ///< Smallest country size allowed by population reduction.
+        int min_countries = 1; ///< Smallest number of countries allowed by population reduction.
 
         double gray_uniform_share_start   = 0.50; ///< Initial share of uniform Gray crossover.
         double gray_uniform_share_end     = 0.50; ///< Final share of uniform Gray crossover.
@@ -1459,29 +1459,29 @@ public:
         std::optional<double> target_f = std::nullopt;
 
         /// Print progress information to the console.
-        bool printing = true;
+        bool printing = false;
 
         // Probabilities of the five country actions. The order used throughout
         // the implementation is Motion, Trade, War, Epidemic, Migration.
         // Values are normalized during initialization if they do not sum to 1.
-        double p_motion    = 0.25; ///< Base probability of Motion.
-        double p_trade     = 0.20; ///< Base probability of Trade.
-        double p_war       = 0.20; ///< Base probability of War.
-        double p_epidemic  = 0.20; ///< Base probability of Epidemic.
-        double p_migration = 0.15; ///< Base probability of Migration.
+        double p_motion    = 0.0; ///< Base probability of Motion.
+        double p_trade     = 0.0; ///< Base probability of Trade.
+        double p_war       = 0.0; ///< Base probability of War.
+        double p_epidemic  = 0.177915; ///< Base probability of Epidemic.
+        double p_migration = 0.0; ///< Base probability of Migration.
 
         bool   adaptive_actions   = true; ///< Adapt probabilities of the five country actions.
         bool   adaptive_reproduction_operators = true; ///< Adapt probabilities of reproduction operators.
         double operator_alpha     = 0.10; ///< Learning rate for reproduction-operator rewards.
         double operator_pmin      = 0.05; ///< Minimum probability kept for each reproduction operator.
-        double action_alpha       = 0.076; // EMA learning rate for action rewards. ///< Learning rate for country-action rewards.
+        double action_alpha       = 0.0551293; // EMA learning rate for action rewards. ///< Learning rate for country-action rewards.
         double action_pmin        = 0.05;  // Probability floor for every action. ///< Minimum probability kept for every country action.
-        double action_warmup_frac = 0.14;  // Fraction of tmax used for warm-up. ///< Early FE fraction used before action probabilities start adapting.
+        double action_warmup_frac = 0.12069;  // Fraction of tmax used for warm-up. ///< Early FE fraction used before action probabilities start adapting.
 
         // Global diversification controls.
-        int    stagnation_limit     = 25;   // Iterations without global improvement. ///< Iterations without a new global best before a restart is allowed.
-        double restart_country_frac = 0.15; // Worst-country fraction to rebuild. ///< Fraction of worst countries rebuilt after stagnation.
-        double migration_frac       = 0.30; // Individuals replaced during migration. ///< Fraction of a country replaced during migration.
+        int    stagnation_limit     = 24;   // Iterations without global improvement. ///< Iterations without a new global best before a restart is allowed.
+        double restart_country_frac = 0.146922; // Worst-country fraction to rebuild. ///< Fraction of worst countries rebuilt after stagnation.
+        double migration_frac       = 0.32868; // Individuals replaced during migration. ///< Fraction of a country replaced during migration.
 
         // Optional initial solution.
         // An empty vector means that the whole population is generated randomly.

@@ -85,7 +85,8 @@ int main(int argc, char** argv) {
     const int runs = 20;
     const long max_calls = 10000L * dim;
     const double tolerance = 1e-8; // Absolute error relative to known F(x*).
-    CountriesAlgorithm::Params params = experiment_params();
+    CountriesAlgorithm::Params params;
+    params.printing = false;
     params.x_min.assign(dim, cec2017::kLowerBound);
     params.x_max.assign(dim, cec2017::kUpperBound);
     params.genes.assign(dim, 32);
