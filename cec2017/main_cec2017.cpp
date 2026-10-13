@@ -11,67 +11,6 @@
 
 typedef std::vector<double> Vec;
 
-// Start with the algorithm's own defaults, then specify this experiment's
-// tuned values in one place. Dimensions, bounds, and target vary per function.
-static CountriesAlgorithm::Params experiment_params() {
-    CountriesAlgorithm::Params p;
-    p.p_min = 6.81035e-05;
-    p.p_max = 1.41681;
-    p.M = 5;
-    p.N = 200;
-    p.n_min = 1;
-    p.n_max = 2;
-    p.m_min = 2;
-    p.m_max = 3;
-    p.k = 10;
-    p.l = 4;
-    p.ep_elite = 0.192889;
-    p.ep_dead = 0.204716;
-    p.max_mutation = 10;
-    p.tmax = 2200;
-    p.gray_percent = 0.0;
-    p.p_war = 0.0;
-    p.p_trade = 0.0;
-    p.p_motion = 0.0;
-    p.p_epidemic = 0.177915;
-    p.p_migration = 0.0;
-    p.action_alpha = 0.0551293;
-    p.action_pmin = 0.05;
-    p.action_warmup_frac = 0.12069;
-    p.stagnation_limit = 24;
-    p.restart_country_frac = 0.146922;
-    p.migration_frac = 0.32868;
-    p.parent_rank_pressure = 3.0;
-    p.real_blx_share_start = 0.0;
-    p.real_blx_share_end = 0.0;
-    p.real_de_share_start = 1.0;
-    p.real_de_share_end = 1.0;
-    p.de_f = 0.55;
-    p.de_cr = 0.90;
-    p.de_pbest_frac = 0.20;
-    p.de_pool_frac = 0.60;
-    p.de_pool_frac_end = 0.40;
-    p.de_exploitation_start_frac = 1.0;
-    p.de_exploit_share_start = 1.0;
-    p.de_exploit_share_end = 1.0;
-    p.de_adaptive = true;
-    p.de_memory_size = 5;
-    p.de_f_sigma = 0.10;
-    p.de_cr_sigma = 0.05;
-    p.adaptive_reproduction_operators = true;
-    p.operator_alpha = 0.10;
-    p.operator_pmin = 0.05;
-    p.population_reduction = true;
-    p.min_country_size = 20;
-    p.min_countries = 1;
-    p.gray_uniform_share_start = 0.50;
-    p.gray_uniform_share_end = 0.50;
-    p.gray_two_point_share_start = 0.50;
-    p.gray_two_point_share_end = 0.50;
-    p.printing = false;
-    return p;
-}
-
 int main(int argc, char** argv) {
     int dim = 2;
     if (argc > 1) dim = std::atoi(argv[1]);
